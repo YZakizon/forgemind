@@ -1,0 +1,495 @@
+import React, { useState } from "react";
+import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+
+import {
+  AppHeader,
+  AppIcon,
+  AppScreen,
+  Card,
+  ChatBubble,
+  GradientCard,
+  MessageInput,
+  Mode,
+  ModeSelector,
+  ModeSelectorSheet,
+  ProgressBar,
+  QuickActionCard,
+  ResetToolCard,
+  SettingsRow,
+  VoiceOrb,
+  VoiceRecordingState
+} from "./components";
+import { colors, radii, spacing } from "./design";
+
+export function HomeScreen() {
+  return (
+    <AppScreen>
+      <View style={styles.homeHeader}>
+        <View>
+          <Text style={styles.greeting}>Good evening, Yeffry</Text>
+          <Text style={styles.heroQuestion}>What’s taking most of your headspace right now?</Text>
+        </View>
+        <TouchableOpacity style={styles.iconCircle}>
+          <AppIcon name="bell" size={20} />
+        </TouchableOpacity>
+      </View>
+
+      <GradientCard title="Talk to Forge" subtitle="I’m here. Let’s talk." cta="→" />
+
+      <View style={styles.sectionGap}>
+        <Text style={styles.sectionTitle}>Quick check-in</Text>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.quickRow}>
+          <QuickActionCard title="Angry" icon="anger" color={colors.danger} />
+          <QuickActionCard title="Burned out" icon="burnout" color={colors.warning} />
+          <QuickActionCard title="Lonely" icon="lonely" color={colors.purple} />
+          <QuickActionCard title="Breakup" icon="breakup" color="#EC4899" />
+        </ScrollView>
+      </View>
+
+      <View style={styles.twoColumn}>
+        <Card style={styles.smallCard}>
+          <Text style={styles.cardLabel}>Insight</Text>
+          <Text style={styles.cardText}>You’ve mentioned work stress several times this week.</Text>
+          <Text style={styles.cardLink}>View details →</Text>
+        </Card>
+        <Card style={styles.smallCard}>
+          <Text style={styles.cardLabel}>Reset</Text>
+          <Text style={styles.cardText}>2-minute reset to clear your mind.</Text>
+          <Text style={styles.cardLink}>Start →</Text>
+        </Card>
+      </View>
+    </AppScreen>
+  );
+}
+
+export function TalkScreen() {
+  const [mode, setMode] = useState<Mode>("Clarity");
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const [listening, setListening] = useState(false);
+
+  if (listening) {
+    return <VoiceScreen mode={mode} onModeChange={setMode} onBack={() => setListening(false)} />;
+  }
+
+  return (
+    <AppScreen>
+      <AppHeader title="Forge" leftIcon="back" rightIcon="sliders" />
+
+      <View style={styles.chatStack}>
+        <ChatBubble role="forge">I’m here, Yeffry. What’s on your mind?</ChatBubble>
+        <ChatBubble role="user">I feel so overwhelmed with work and life right now.</ChatBubble>
+        <ChatBubble role="forge">That’s a lot to carry. Let’s slow it down. What’s been the hardest part today?</ChatBubble>
+      </View>
+
+      <View style={styles.suggestionRow}>
+        {["It’s the pressure", "No time for myself", "I don’t know"].map((item) => (
+          <TouchableOpacity key={item} style={styles.suggestionChip}>
+            <Text style={styles.suggestionText}>{item}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      <MessageInput />
+
+      <TouchableOpacity style={styles.voicePreview} onPress={() => setListening(true)} activeOpacity={0.86}>
+        <View>
+          <Text style={styles.voiceTitle}>Tap-to-Talk</Text>
+          <Text style={styles.voiceCopy}>Use voice when typing feels like too much.</Text>
+        </View>
+        <View style={styles.smallMic}>
+          <AppIcon name="mic" color={colors.text} size={18} />
+        </View>
+      </TouchableOpacity>
+
+      <View style={styles.modeHeader}>
+        <Text style={styles.modeLabel}>Mode</Text>
+        <TouchableOpacity onPress={() => setSheetOpen(true)}>
+          <Text style={styles.cardLink}>Change</Text>
+        </TouchableOpacity>
+      </View>
+      <ModeSelector value={mode} onChange={setMode} />
+
+      <ModeSelectorSheet visible={sheetOpen} selected={mode} onSelect={setMode} onClose={() => setSheetOpen(false)} />
+    </AppScreen>
+  );
+}
+
+function VoiceScreen({ mode, onModeChange, onBack }: { mode: Mode; onModeChange: (mode: Mode) => void; onBack: () => void }) {
+  return (
+    <AppScreen>
+      <TouchableOpacity onPress={onBack}>
+        <AppHeader title="Forge" leftIcon="back" rightIcon="sliders" />
+      </TouchableOpacity>
+
+      <View style={styles.voiceCenter}>
+        <Text style={styles.listeningTitle}>Listening...</Text>
+        <VoiceOrb active />
+        <Text style={styles.tapStop}>Tap to stop</Text>
+        <Text style={styles.voiceInstruction}>Speak naturally. I’m listening.</Text>
+      </View>
+
+      <ModeSelector value={mode} onChange={onModeChange} compact />
+      <VoiceRecordingState />
+    </AppScreen>
+  );
+}
+
+export function ResetScreen() {
+  const [filter, setFilter] = useState("All");
+  const filters = ["All", "Emotions", "Life Events", "Sleep", "Relationships"];
+  const tools = [
+    { title: "Anger Reset", description: "Release tension and cool down", duration: "3 min", icon: "anger", color: colors.danger },
+    { title: "Burnout Reset", description: "Recharge your energy", duration: "4 min", icon: "burnout", color: colors.warning },
+    { title: "Breakup Reset", description: "Heal and move forward", duration: "5 min", icon: "breakup", color: "#EC4899" },
+    { title: "Divorce Support", description: "Navigate with strength", duration: "5–10 min", icon: "talk", color: colors.accentBright },
+    { title: "Wedding Stress", description: "Stay calm during big moments", duration: "3 min", icon: "work", color: "#EAB308" },
+    { title: "Sleep Reset", description: "Quiet your mind for deep sleep", duration: "3 min", icon: "sleep", color: colors.purple },
+    { title: "Confidence Boost", description: "Rebuild your inner strength", duration: "", icon: "support", color: colors.success },
+    { title: "Family Conflict", description: "Handle tough conversations", duration: "", icon: "relationship", color: "#F59E0B" }
+  ] as const;
+
+  return (
+    <AppScreen>
+      <AppHeader title="Reset" rightIcon="info" />
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
+        {filters.map((item) => (
+          <TouchableOpacity key={item} style={[styles.filterChip, filter === item && styles.filterChipActive]} onPress={() => setFilter(item)}>
+            <Text style={[styles.filterText, filter === item && styles.filterTextActive]}>{item}</Text>
+          </TouchableOpacity>
+        ))}
+      </ScrollView>
+      <View style={styles.resetGrid}>
+        {tools.map((tool) => (
+          <ResetToolCard key={tool.title} title={tool.title} description={tool.description} duration={tool.duration} icon={tool.icon} color={tool.color} />
+        ))}
+      </View>
+    </AppScreen>
+  );
+}
+
+export function ProgressScreen() {
+  return (
+    <AppScreen>
+      <AppHeader title="Progress" rightIcon="info" />
+      <Card style={styles.progressThemeCard}>
+        <View style={styles.progressTitleRow}>
+          <Text style={styles.sectionTitle}>This week’s themes</Text>
+          <Text style={styles.viewAllText}>View all</Text>
+        </View>
+        <View style={styles.progressStack}>
+          <ProgressBar label="Work pressure" value={82} tone="High" color={colors.danger} icon="work" iconColor="#EAB308" />
+          <ProgressBar label="Relationship stress" value={60} tone="Medium" color={colors.warning} icon="relationship" />
+          <ProgressBar label="Sleep" value={60} tone="Medium" color={colors.purple} icon="sleep" />
+        </View>
+      </Card>
+      <Card>
+        <Text style={styles.cardLabel}>Pattern</Text>
+        <Text style={styles.progressCardText}>Sunday nights seem harder for you. You often feel more stressed.</Text>
+        <Text style={styles.cardLink}>View pattern →</Text>
+      </Card>
+      <Card>
+        <Text style={styles.cardLabel}>Wins</Text>
+        <Text style={styles.progressCardText}>You paused before reacting 3 times this week.</Text>
+        <Text style={styles.winText}>Keep it up! 👍</Text>
+      </Card>
+    </AppScreen>
+  );
+}
+
+export function ProfileScreen() {
+  return (
+    <AppScreen>
+      <View style={styles.profileHeader}>
+        <View style={styles.avatar}>
+          <Text style={styles.avatarText}>F</Text>
+        </View>
+        <View style={styles.profileCopy}>
+          <Text style={styles.profileName}>Yeffry</Text>
+          <Text style={styles.profileMeta}>Member since May 2025</Text>
+          <View style={styles.premiumBadge}>
+            <Text style={styles.premiumText}>Premium</Text>
+          </View>
+        </View>
+        <TouchableOpacity style={styles.iconCircle}>
+          <AppIcon name="settings" size={20} />
+        </TouchableOpacity>
+      </View>
+
+      <Card>
+        <Text style={styles.sectionTitle}>Your privacy, your control</Text>
+        <SettingsRow label="Memory controls" icon="memory" />
+        <SettingsRow label="Delete my data" icon="trash" />
+        <SettingsRow label="Export my data" icon="export" />
+        <SettingsRow label="Privacy settings" icon="privacy" />
+      </Card>
+
+      <Card>
+        <Text style={styles.sectionTitle}>Preferences</Text>
+        <SettingsRow label="AI tone" value="Calm & Grounded" icon="tone" />
+        <SettingsRow label="Notifications" icon="notification" />
+        <SettingsRow label="Appearance" value="Dark" icon="appearance" />
+      </Card>
+
+      <Card>
+        <Text style={styles.sectionTitle}>Support</Text>
+        <SettingsRow label="Emergency resources" icon="support" />
+      </Card>
+    </AppScreen>
+  );
+}
+
+const styles = StyleSheet.create({
+  homeHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: spacing.md
+  },
+  greeting: {
+    color: colors.text,
+    fontSize: 22,
+    lineHeight: 28,
+    fontWeight: "700"
+  },
+  heroQuestion: {
+    maxWidth: 245,
+    color: colors.secondaryText,
+    fontSize: 15,
+    lineHeight: 21,
+    marginTop: 5
+  },
+  iconCircle: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderWidth: 1
+  },
+  sectionGap: {
+    gap: spacing.md
+  },
+  sectionTitle: {
+    color: colors.text,
+    fontSize: 17,
+    fontWeight: "700"
+  },
+  quickRow: {
+    gap: 8,
+    paddingRight: spacing.md
+  },
+  twoColumn: {
+    flexDirection: "row",
+    gap: spacing.md
+  },
+  smallCard: {
+    flex: 1,
+    minHeight: 114
+  },
+  cardLabel: {
+    color: colors.accentBright,
+    fontSize: 14,
+    fontWeight: "700",
+    marginBottom: 8
+  },
+  cardText: {
+    color: colors.text,
+    fontSize: 14,
+    lineHeight: 20
+  },
+  cardLink: {
+    color: colors.accentBright,
+    fontSize: 13,
+    fontWeight: "700",
+    marginTop: spacing.md
+  },
+  chatStack: {
+    gap: spacing.md
+  },
+  suggestionRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: spacing.sm
+  },
+  suggestionChip: {
+    borderRadius: radii.pill,
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderWidth: 1,
+    paddingVertical: 8,
+    paddingHorizontal: 11
+  },
+  suggestionText: {
+    color: colors.secondaryText,
+    fontSize: 13,
+    fontWeight: "700"
+  },
+  modeHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between"
+  },
+  modeLabel: {
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: "700"
+  },
+  voicePreview: {
+    minHeight: 66,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    borderRadius: 16,
+    backgroundColor: colors.elevated,
+    borderColor: colors.border,
+    borderWidth: 1,
+    padding: 14
+  },
+  voiceTitle: {
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: "700"
+  },
+  voiceCopy: {
+    color: colors.secondaryText,
+    fontSize: 13,
+    lineHeight: 18,
+    marginTop: 5
+  },
+  smallMic: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.warning
+  },
+  voiceStates: {
+    gap: spacing.md
+  },
+  voiceCenter: {
+    minHeight: 340,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.md
+  },
+  listeningTitle: {
+    color: colors.text,
+    fontSize: 24,
+    fontWeight: "700"
+  },
+  tapStop: {
+    color: colors.text,
+    fontSize: 14,
+    fontWeight: "700"
+  },
+  voiceInstruction: {
+    color: colors.secondaryText,
+    fontSize: 13
+  },
+  filterRow: {
+    gap: spacing.sm,
+    paddingRight: spacing.lg
+  },
+  filterChip: {
+    minHeight: 42,
+    borderRadius: radii.pill,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderWidth: 1,
+    paddingHorizontal: 18
+  },
+  filterChipActive: {
+    backgroundColor: colors.accent
+  },
+  filterText: {
+    color: colors.secondaryText,
+    fontSize: 15,
+    fontWeight: "700"
+  },
+  filterTextActive: {
+    color: colors.text
+  },
+  resetGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "space-between",
+    rowGap: spacing.md
+  },
+  progressStack: {
+    gap: 18,
+    marginTop: 16
+  },
+  progressThemeCard: {
+    paddingVertical: 16
+  },
+  progressTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between"
+  },
+  viewAllText: {
+    color: colors.accentBright,
+    fontSize: 14,
+    fontWeight: "600"
+  },
+  progressCardText: {
+    color: colors.secondaryText,
+    fontSize: 14,
+    lineHeight: 20
+  },
+  winText: {
+    color: colors.success,
+    fontSize: 15,
+    fontWeight: "700",
+    marginTop: spacing.md
+  },
+  profileHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md
+  },
+  avatar: {
+    width: 70,
+    height: 70,
+    borderRadius: 35,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.accent
+  },
+  avatarText: {
+    color: colors.text,
+    fontSize: 34,
+    fontWeight: "800"
+  },
+  profileCopy: {
+    flex: 1,
+    gap: 4
+  },
+  profileName: {
+    color: colors.text,
+    fontSize: 22,
+    fontWeight: "700"
+  },
+  profileMeta: {
+    color: colors.secondaryText,
+    fontSize: 14
+  },
+  premiumBadge: {
+    alignSelf: "flex-start",
+    borderRadius: radii.pill,
+    backgroundColor: colors.purple,
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    marginTop: 4
+  },
+  premiumText: {
+    color: colors.text,
+    fontSize: 13,
+    fontWeight: "800"
+  }
+});
