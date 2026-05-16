@@ -1,0 +1,37 @@
+{
+  "title": "ForgeMind Overview",
+  "schemaVersion": 39,
+  "version": 1,
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "HTTP Requests",
+      "targets": [
+        {
+          "expr": "sum(rate(forgemind_http_requests_total[5m])) by (path, status)"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Safety Events",
+      "targets": [
+        {
+          "expr": "sum(rate(forgemind_safety_events_total[5m])) by (level)"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      }
+    }
+  ]
+}
