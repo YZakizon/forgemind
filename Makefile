@@ -13,10 +13,7 @@ TEST_BACKEND_PORT ?= 28005
 TEST_ADMIN_PORT ?= 23005
 TEST_METRO_PORT ?= 28085
 GRADLE_USER_HOME ?= /tmp/forgemind-gradle
-PYTHON := $(BACKEND_DIR)/.venv/bin/python
-PIP := $(BACKEND_DIR)/.venv/bin/pip
-UVICORN := $(BACKEND_DIR)/.venv/bin/uvicorn
-ALEMBIC := $(BACKEND_DIR)/.venv/bin/alembic
+UV := uv
 
 .PHONY: help setup setup-backend setup-admin setup-mobile infra infra-down migrate backend backend-test-server frontend frontend-test-server admin mobile mobile-test-server android-tunnel android-install test test-backend test-admin test-mobile audit clean
 
@@ -42,8 +39,7 @@ help:
 setup: setup-backend setup-admin setup-mobile
 
 setup-backend:
-	test -d $(BACKEND_DIR)/.venv || python3 -m venv $(BACKEND_DIR)/.venv
-	$(PIP) install -r $(BACKEND_DIR)/requirements.txt
+	cd $(BACKEND_DIR) && $(UV) sync
 
 setup-admin:
 	cd $(ADMIN_DIR) && npm install
@@ -58,13 +54,13 @@ infra-down:
 	docker compose down
 
 migrate:
-	cd $(BACKEND_DIR) && .venv/bin/alembic upgrade head
+	cd $(BACKEND_DIR) && $(UV) run alembic upgrade head
 
 backend:
-	cd $(BACKEND_DIR) && .venv/bin/uvicorn app.main:app --reload --host $(HOST) --port $(BACKEND_PORT)
+	cd $(BACKEND_DIR) && $(UV) run uvicorn app.main:app --reload --host $(HOST) --port $(BACKEND_PORT)
 
 backend-test-server:
-	cd $(BACKEND_DIR) && .venv/bin/uvicorn app.main:app --reload --host $(HOST) --port $(TEST_BACKEND_PORT)
+	cd $(BACKEND_DIR) && $(UV) run uvicorn app.main:app --reload --host $(HOST) --port $(TEST_BACKEND_PORT)
 
 frontend: admin
 
@@ -89,7 +85,7 @@ android-install: android-tunnel
 test: test-backend test-admin test-mobile
 
 test-backend:
-	$(PYTHON) -m pytest $(BACKEND_DIR)/tests
+	cd $(BACKEND_DIR) && $(UV) run pytest tests
 
 test-admin:
 	cd $(ADMIN_DIR) && npm run typecheck

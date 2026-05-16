@@ -18,6 +18,12 @@ Start infrastructure:
 docker compose up -d postgres prometheus grafana
 ```
 
+Install Python dependencies with `uv`. If `uv` is not installed yet:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
 For LAN testing with a phone, use your machine's `192.168.0.x` address:
 
 ```bash
@@ -42,18 +48,16 @@ Run backend:
 
 ```bash
 cd backend
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-alembic upgrade head
-uvicorn app.main:app --reload --host 192.168.0.x --port 8005
+uv sync
+uv run alembic upgrade head
+uv run uvicorn app.main:app --reload --host 192.168.0.x --port 8005
 ```
 
 Run backend tests:
 
 ```bash
 cd backend
-pytest
+uv run pytest
 ```
 
 Run admin:
