@@ -18,12 +18,82 @@ export type ForgeChatResponse = {
   persisted: boolean;
 };
 
+export type MoodCheckin = {
+  id: string;
+  user_id: string;
+  label: string;
+  intensity?: number | null;
+  note?: string | null;
+  created_at: string;
+};
+
+export type ResetSession = {
+  id: string;
+  user_id: string;
+  reset_type: string;
+  completed: boolean;
+  notes?: string | null;
+  created_at: string;
+  completed_at?: string | null;
+};
+
+export type ProgressSummary = {
+  user_id: string;
+  checkins_this_week: number;
+  resets_completed_this_week: number;
+  themes: Array<{ label: string; value: number; tone: string }>;
+  recent_checkins: MoodCheckin[];
+  recent_resets: ResetSession[];
+};
+
 export async function sendChatMessage(message: string, mode: Mode): Promise<ForgeChatResponse> {
   const response = await fetch(`${API_BASE_URL}/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ user_id: DEMO_USER_ID, message, mode: mode.toLowerCase() })
   });
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  return response.json();
+}
+
+export async function createMoodCheckin(label: string, intensity?: number): Promise<MoodCheckin> {
+  const response = await fetch(`${API_BASE_URL}/mood-checkins`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id: DEMO_USER_ID, label, intensity })
+  });
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  return response.json();
+}
+
+export async function createResetSession(resetType: string): Promise<ResetSession> {
+  const response = await fetch(`${API_BASE_URL}/reset-sessions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id: DEMO_USER_ID, reset_type: resetType })
+  });
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  return response.json();
+}
+
+export async function completeResetSession(resetId: string): Promise<ResetSession> {
+  const response = await fetch(`${API_BASE_URL}/reset-sessions/${resetId}/complete?user_id=${DEMO_USER_ID}`, {
+    method: "POST"
+  });
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  return response.json();
+}
+
+export async function fetchProgressSummary(): Promise<ProgressSummary> {
+  const response = await fetch(`${API_BASE_URL}/progress/summary?user_id=${DEMO_USER_ID}`);
   if (!response.ok) {
     throw new Error(await response.text());
   }

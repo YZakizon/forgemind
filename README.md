@@ -97,6 +97,10 @@ The mobile UI uses React Navigation bottom tabs and mock preview state for Home,
 - `POST /safety/classify`
 - `GET/POST/PUT/DELETE /guidance/rules`
 - `GET /memories`
+- `POST /mood-checkins`
+- `GET /progress/summary`
+- `POST /reset-sessions`
+- `POST /reset-sessions/{reset_id}/complete`
 - `POST /subscriptions/validate`
 - `GET /metrics`
 
@@ -117,6 +121,10 @@ The pure ranking/filtering code is implemented in `backend/app/services/memory.p
 `/auth/login` accepts Google or Apple provider tokens and issues ForgeMind JWT sessions. The MVP verifier keeps provider-specific, stable local subjects for development; production credentials still need Google and Apple public-key validation. `/auth/me` verifies bearer tokens and returns the current user id.
 
 The safety gate now stops normal coaching for crisis and high-risk safety messages before prompt generation. Guidance coverage includes burnout, anxiety, anger, breakup, divorce, dating, wedding or fiance stress, loneliness, fatherhood, family conflict, and sleep support.
+
+## Progress and Reset Tracking
+
+Home quick check-ins persist to `mood_checkins`, Reset tools create and complete `reset_sessions`, and Progress reads `/progress/summary` for weekly check-in counts, completed resets, and top emotional themes. If the backend is unavailable, the mobile app keeps the calm preview state and shows a compact sync message.
 
 ## AI and Voice
 

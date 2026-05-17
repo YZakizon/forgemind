@@ -17,6 +17,11 @@ from app.schemas import (
     GuidanceCreate,
     GuidanceRule,
     MemoryListResponse,
+    MoodCheckin,
+    MoodCheckinCreate,
+    ProgressSummary,
+    ResetSession,
+    ResetSessionCreate,
     SafetyEventListResponse,
     SafetyLevel,
     SubscriptionValidationRequest,
@@ -296,6 +301,58 @@ def list_memories(user_id: str) -> MemoryListResponse:
             return MemoryListResponse(items=[])
 
     return asyncio.run(_list())
+
+
+@app.post("/mood-checkins", response_model=MoodCheckin)
+def create_mood_checkin(payload: MoodCheckinCreate) -> MoodCheckin:
+    async def _create() -> MoodCheckin:
+        return await store.create_mood_checkin(payload.user_id, payload.label, payload.intensity, payload.note)
+
+    try:
+        result = asyncio.run(_create())
+        capture_event("mood_checkin_created", {"user_id": payload.user_id, "label": payload.label})
+        return result
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Mood check-in storage is unavailable") from exc
+
+
+@app.post("/reset-sessions", response_model=ResetSession)
+def create_reset_session(payload: ResetSessionCreate) -> ResetSession:
+    async def _create() -> ResetSession:
+        return await store.create_reset_session(payload.user_id, payload.reset_type, payload.notes)
+
+    try:
+        result = asyncio.run(_create())
+        capture_event("reset_session_started", {"user_id": payload.user_id, "reset_type": payload.reset_type})
+        return result
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Reset session storage is unavailable") from exc
+
+
+@app.post("/reset-sessions/{reset_id}/complete", response_model=ResetSession)
+def complete_reset_session(reset_id: str, user_id: str) -> ResetSession:
+    async def _complete() -> ResetSession:
+        return await store.complete_reset_session(reset_id, user_id)
+
+    try:
+        result = asyncio.run(_complete())
+        capture_event("reset_session_completed", {"user_id": user_id, "reset_type": result.reset_type})
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Reset session storage is unavailable") from exc
+
+
+@app.get("/progress/summary", response_model=ProgressSummary)
+def progress_summary(user_id: str) -> ProgressSummary:
+    async def _summary() -> ProgressSummary:
+        return await store.get_progress_summary(user_id)
+
+    try:
+        return asyncio.run(_summary())
+    except Exception:
+        return ProgressSummary(user_id=user_id)
 
 
 @app.post("/subscriptions/validate", response_model=SubscriptionValidationResponse)
