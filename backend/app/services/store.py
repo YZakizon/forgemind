@@ -6,7 +6,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import text
 
 from app.db import get_sessionmaker
-from app.schemas import GuidanceRule, MemoryCandidate, MemoryStatus, SafetyLevel
+from app.schemas import GuidanceRule, MemoryCandidate, MemoryStatus, SafetyEvent, SafetyLevel
 from app.services.guidance import DEFAULT_GUIDANCE_RULES
 
 
@@ -249,6 +249,35 @@ async def list_user_memories(user_id: str) -> list[MemoryCandidate]:
             )
         ).mappings())
     return [_memory_from_row(row) for row in rows]
+
+
+async def list_safety_events(limit: int = 50) -> list[SafetyEvent]:
+    sessionmaker = get_sessionmaker()
+    async with sessionmaker() as session:
+        rows = list((
+            await session.execute(
+                text(
+                    """
+                    SELECT id, user_id, message_id, level, reasons, created_at
+                    FROM safety_events
+                    ORDER BY created_at DESC
+                    LIMIT :limit
+                    """
+                ),
+                {"limit": limit},
+            )
+        ).mappings())
+    return [
+        SafetyEvent(
+            id=str(row["id"]),
+            user_id=str(row["user_id"]),
+            message_id=str(row["message_id"]) if row["message_id"] else None,
+            level=SafetyLevel(row["level"]),
+            reasons=list(row["reasons"] or []),
+            created_at=_aware(row["created_at"]),
+        )
+        for row in rows
+    ]
 
 
 def _memory_from_row(row) -> MemoryCandidate:

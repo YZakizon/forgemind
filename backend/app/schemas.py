@@ -117,3 +117,16 @@ class SubscriptionValidationResponse(BaseModel):
 
 class MemoryListResponse(BaseModel):
     items: list[MemoryCandidate]
+
+
+class SafetyEvent(BaseModel):
+    id: str
+    user_id: str
+    message_id: str | None = None
+    level: SafetyLevel
+    reasons: list[str] = []
+    created_at: datetime
+
+
+class SafetyEventListResponse(BaseModel):
+    items: list[SafetyEvent]

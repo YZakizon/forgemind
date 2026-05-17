@@ -21,6 +21,107 @@ import {
 } from "./components";
 import { sendChatMessage, sendVoiceMessage } from "./api";
 import { colors, radii, spacing } from "./design";
+import type { OnboardingPreferences } from "./preferences";
+
+const goalOptions = ["Think clearer", "Feel less overwhelmed", "Handle anger", "Sleep better"];
+const stressOptions = ["Work pressure", "Relationship stress", "Loneliness", "Family conflict", "Dating stress", "Burnout"];
+const communicationOptions = ["Direct and practical", "Calm and reflective", "Short and focused"];
+const supportOptions = ["Vent first", "Advice when ready", "Calm me down", "Help me find clarity"];
+
+function toggleSelection(values: string[], value: string) {
+  return values.includes(value) ? values.filter((item) => item !== value) : [...values, value];
+}
+
+export function OnboardingScreen({ onComplete }: { onComplete: (preferences: OnboardingPreferences) => Promise<void> }) {
+  const [goals, setGoals] = useState<string[]>(["Think clearer"]);
+  const [stressCategories, setStressCategories] = useState<string[]>(["Work pressure"]);
+  const [communicationPreference, setCommunicationPreference] = useState(communicationOptions[0]);
+  const [supportPreference, setSupportPreference] = useState(supportOptions[0]);
+  const [saving, setSaving] = useState(false);
+
+  const canContinue = goals.length > 0 && stressCategories.length > 0 && communicationPreference && supportPreference;
+
+  async function submit() {
+    if (!canContinue || saving) return;
+    setSaving(true);
+    await onComplete({ goals, stressCategories, communicationPreference, supportPreference });
+  }
+
+  return (
+    <AppScreen>
+      <View style={styles.onboardingHero}>
+        <View style={styles.onboardingMark}>
+          <Text style={styles.onboardingMarkText}>F</Text>
+        </View>
+        <Text style={styles.onboardingTitle}>ForgeMind</Text>
+        <Text style={styles.onboardingCopy}>Set the kind of support that feels useful when pressure is high.</Text>
+      </View>
+
+      <OnboardingSection title="What do you want help with?">
+        <SelectableGrid options={goalOptions} selected={goals} onToggle={(item) => setGoals((current) => toggleSelection(current, item))} />
+      </OnboardingSection>
+
+      <OnboardingSection title="What has been taking space lately?">
+        <SelectableGrid
+          options={stressOptions}
+          selected={stressCategories}
+          onToggle={(item) => setStressCategories((current) => toggleSelection(current, item))}
+        />
+      </OnboardingSection>
+
+      <OnboardingSection title="How should Forge talk with you?">
+        <SelectableGrid options={communicationOptions} selected={[communicationPreference]} onToggle={setCommunicationPreference} single />
+      </OnboardingSection>
+
+      <OnboardingSection title="What support should come first?">
+        <SelectableGrid options={supportOptions} selected={[supportPreference]} onToggle={setSupportPreference} single />
+      </OnboardingSection>
+
+      <TouchableOpacity style={[styles.primaryButton, !canContinue && styles.primaryButtonDisabled]} onPress={submit} activeOpacity={0.86}>
+        <Text style={styles.primaryButtonText}>{saving ? "Saving..." : "Start with Forge"}</Text>
+      </TouchableOpacity>
+    </AppScreen>
+  );
+}
+
+function OnboardingSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <Card style={styles.onboardingSection}>
+      <Text style={styles.sectionTitle}>{title}</Text>
+      {children}
+    </Card>
+  );
+}
+
+function SelectableGrid({
+  options,
+  selected,
+  onToggle,
+  single = false
+}: {
+  options: string[];
+  selected: string[];
+  onToggle: (value: string) => void;
+  single?: boolean;
+}) {
+  return (
+    <View style={styles.selectableGrid}>
+      {options.map((option) => {
+        const active = selected.includes(option);
+        return (
+          <TouchableOpacity
+            key={option}
+            style={[styles.selectableChip, active && styles.selectableChipActive, single && styles.selectableChipWide]}
+            onPress={() => onToggle(option)}
+            activeOpacity={0.86}
+          >
+            <Text style={[styles.selectableChipText, active && styles.selectableChipTextActive]}>{option}</Text>
+          </TouchableOpacity>
+        );
+      })}
+    </View>
+  );
+}
 
 export function HomeScreen() {
   return (
@@ -347,6 +448,90 @@ export function ProfileScreen() {
 }
 
 const styles = StyleSheet.create({
+  onboardingHero: {
+    alignItems: "center",
+    gap: spacing.sm,
+    paddingTop: spacing.lg,
+    paddingBottom: spacing.sm
+  },
+  onboardingMark: {
+    width: 76,
+    height: 76,
+    borderRadius: 38,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.accent,
+    borderColor: colors.accentBright,
+    borderWidth: 1
+  },
+  onboardingMarkText: {
+    color: colors.text,
+    fontSize: 34,
+    fontWeight: "800"
+  },
+  onboardingTitle: {
+    color: colors.text,
+    fontSize: 28,
+    lineHeight: 34,
+    fontWeight: "800"
+  },
+  onboardingCopy: {
+    color: colors.secondaryText,
+    maxWidth: 310,
+    textAlign: "center",
+    fontSize: 15,
+    lineHeight: 22
+  },
+  onboardingSection: {
+    gap: spacing.md
+  },
+  selectableGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: spacing.sm
+  },
+  selectableChip: {
+    minHeight: 42,
+    maxWidth: "100%",
+    borderRadius: radii.pill,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderWidth: 1,
+    paddingHorizontal: 14
+  },
+  selectableChipWide: {
+    width: "100%"
+  },
+  selectableChipActive: {
+    backgroundColor: colors.accent,
+    borderColor: colors.accentBright
+  },
+  selectableChipText: {
+    color: colors.secondaryText,
+    fontSize: 14,
+    fontWeight: "700"
+  },
+  selectableChipTextActive: {
+    color: colors.text
+  },
+  primaryButton: {
+    minHeight: 54,
+    borderRadius: radii.pill,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.accentBright,
+    marginTop: spacing.sm
+  },
+  primaryButtonDisabled: {
+    opacity: 0.5
+  },
+  primaryButtonText: {
+    color: colors.text,
+    fontSize: 16,
+    fontWeight: "800"
+  },
   homeHeader: {
     flexDirection: "row",
     alignItems: "flex-start",
