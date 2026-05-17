@@ -3,7 +3,7 @@ import tempfile
 from time import perf_counter
 from uuid import uuid4
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from prometheus_client import Counter, Histogram, generate_latest
 from starlette.responses import Response
 
@@ -11,6 +11,7 @@ from app.config import get_public_config
 from app.schemas import (
     AuthRequest,
     AuthResponse,
+    AuthUser,
     ChatRequest,
     ChatResponse,
     GuidanceCreate,
@@ -22,10 +23,11 @@ from app.schemas import (
     SubscriptionValidationResponse,
 )
 from app.services.ai import validate_response_safety
-from app.services.auth import issue_access_token, verify_identity_token
+from app.services.auth import extract_bearer_token, issue_access_token, verify_access_token, verify_identity_token
 from app.services.guidance import DEFAULT_GUIDANCE_RULES, build_guidance_prompt_block, retrieve_guidance
 from app.services.memory import build_memory_prompt_block, extract_memory_candidates, filter_and_rank_memories
 from app.services.openai_provider import OpenAIProvider
+from app.services.observability import capture_event, configure_observability
 from app.services import store
 from app.services.safety import classify_safety
 from app.services.subscription import validate_store_purchase
@@ -37,6 +39,7 @@ MEMORY_RETRIEVAL_LATENCY = Histogram("forgemind_memory_retrieval_seconds", "Memo
 AI_LATENCY = Histogram("forgemind_ai_response_seconds", "AI response latency")
 
 app = FastAPI(title="ForgeMind API", version="0.1.0")
+configure_observability()
 
 guidance_rules: dict[str, GuidanceRule] = {rule.id: rule for rule in DEFAULT_GUIDANCE_RULES}
 
@@ -66,7 +69,32 @@ def login(payload: AuthRequest) -> AuthResponse:
         user_id = verify_identity_token(payload.provider, payload.identity_token)
     except ValueError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+    async def _persist_user() -> None:
+        await store.upsert_user(
+            user_id=user_id,
+            email=f"{payload.provider}-{user_id}@forgemind.local",
+            display_name="ForgeMind User",
+            provider=payload.provider.value,
+            subject=payload.identity_token,
+        )
+
+    try:
+        asyncio.run(_persist_user())
+    except Exception:
+        pass
+    capture_event("auth_login", {"user_id": user_id, "provider": payload.provider.value})
     return AuthResponse(user_id=user_id, access_token=issue_access_token(user_id))
+
+
+@app.get("/auth/me", response_model=AuthUser)
+def auth_me(authorization: str | None = Header(default=None)) -> AuthUser:
+    try:
+        token = extract_bearer_token(authorization)
+        user_id = verify_access_token(token)
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    return AuthUser(user_id=user_id)
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -81,6 +109,19 @@ async def _chat_flow(payload: ChatRequest, transcript: str | None = None) -> Cha
         await _try_store_safety(payload.user_id, safety.level, safety.reasons)
         return ChatResponse(
             response=safety.crisis_response or "",
+            safety_level=safety.level,
+            memories_used=[],
+            guidance_topics=[],
+            transcript=transcript,
+        )
+    if safety.level == SafetyLevel.high:
+        await _try_store_safety(payload.user_id, safety.level, safety.reasons)
+        return ChatResponse(
+            response=(
+                "This sounds like a safety situation, not a normal coaching moment. "
+                "If there is immediate danger, call emergency services now. If you can, "
+                "move to a safer place and contact one trusted person nearby."
+            ),
             safety_level=safety.level,
             memories_used=[],
             guidance_topics=[],
@@ -135,6 +176,17 @@ async def _chat_flow(payload: ChatRequest, transcript: str | None = None) -> Cha
         memory_embeddings = {content: provider.embed_text(content) for content in memory_contents}
         await store.insert_memories(payload.user_id, memory_contents, memory_embeddings)
         persisted = True
+        capture_event(
+            "chat_completed",
+            {
+                "user_id": payload.user_id,
+                "mode": payload.mode,
+                "safety_level": safety.level.value,
+                "guidance_topics": [rule.topic for rule in guidance],
+                "memories_used": len(memories),
+                "memories_saved": len(memory_contents),
+            },
+        )
     except Exception:
         persisted = False
 
@@ -248,7 +300,27 @@ def list_memories(user_id: str) -> MemoryListResponse:
 
 @app.post("/subscriptions/validate", response_model=SubscriptionValidationResponse)
 def validate_subscription(payload: SubscriptionValidationRequest) -> SubscriptionValidationResponse:
-    return validate_store_purchase(payload.user_id, payload.platform, payload.receipt_or_purchase_token)
+    result = validate_store_purchase(payload.user_id, payload.platform, payload.receipt_or_purchase_token)
+
+    async def _persist() -> bool:
+        await store.save_subscription_validation(
+            user_id=result.user_id,
+            platform=result.platform,
+            entitlement=result.entitlement,
+            valid=result.valid,
+            store_transaction_id=payload.receipt_or_purchase_token,
+        )
+        return True
+
+    try:
+        result.persisted = asyncio.run(_persist())
+    except Exception:
+        result.persisted = False
+    capture_event(
+        "subscription_validation",
+        {"user_id": result.user_id, "platform": result.platform, "valid": result.valid},
+    )
+    return result
 
 
 @app.get("/metrics")

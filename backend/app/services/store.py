@@ -35,6 +35,40 @@ async def ensure_demo_user(user_id: str) -> None:
         await session.commit()
 
 
+async def upsert_user(
+    user_id: str,
+    email: str | None,
+    display_name: str | None,
+    provider: str,
+    subject: str,
+) -> None:
+    parsed = _uuid(user_id)
+    sessionmaker = get_sessionmaker()
+    async with sessionmaker() as session:
+        await session.execute(
+            text(
+                """
+                INSERT INTO users (id, email, display_name, auth_provider, provider_subject)
+                VALUES (:id, :email, :display_name, :provider, :subject)
+                ON CONFLICT (id) DO UPDATE SET
+                    email = COALESCE(EXCLUDED.email, users.email),
+                    display_name = COALESCE(EXCLUDED.display_name, users.display_name),
+                    auth_provider = EXCLUDED.auth_provider,
+                    provider_subject = EXCLUDED.provider_subject,
+                    updated_at = now()
+                """
+            ),
+            {
+                "id": parsed,
+                "email": email,
+                "display_name": display_name,
+                "provider": provider,
+                "subject": subject,
+            },
+        )
+        await session.commit()
+
+
 async def create_chat_session(user_id: str, mode: str) -> str:
     parsed_user_id = _uuid(user_id)
     session_id = uuid4()
@@ -278,6 +312,39 @@ async def list_safety_events(limit: int = 50) -> list[SafetyEvent]:
         )
         for row in rows
     ]
+
+
+async def save_subscription_validation(
+    user_id: str,
+    platform: str,
+    entitlement: str,
+    valid: bool,
+    store_transaction_id: str,
+) -> None:
+    await ensure_demo_user(user_id)
+    sessionmaker = get_sessionmaker()
+    async with sessionmaker() as session:
+        await session.execute(
+            text(
+                """
+                INSERT INTO subscriptions (
+                    id, user_id, platform, entitlement, status, store_transaction_id
+                )
+                VALUES (
+                    :id, :user_id, :platform, :entitlement, :status, :store_transaction_id
+                )
+                """
+            ),
+            {
+                "id": uuid4(),
+                "user_id": _uuid(user_id),
+                "platform": platform,
+                "entitlement": entitlement,
+                "status": "active" if valid else "inactive",
+                "store_transaction_id": store_transaction_id,
+            },
+        )
+        await session.commit()
 
 
 def _memory_from_row(row) -> MemoryCandidate:

@@ -1,7 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
 from app.schemas import MemoryCandidate, MemoryStatus
-from app.services.memory import filter_and_rank_memories, recency_score
+from app.services.memory import extract_memory_candidates, filter_and_rank_memories, recency_score
 
 
 def candidate(identifier: str, **overrides) -> MemoryCandidate:
@@ -56,3 +56,11 @@ def test_ranking_uses_similarity_importance_recency_and_active_status():
     )
     assert ranked[0].id == "important"
     assert ranked[0].final_score > ranked[1].final_score
+
+
+def test_memory_extraction_skips_safety_content():
+    assert extract_memory_candidates("I always feel like I want to kill myself") == []
+
+
+def test_memory_extraction_keeps_durable_context():
+    assert extract_memory_candidates("I usually sleep badly before family conflict")

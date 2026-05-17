@@ -1,3 +1,5 @@
+import re
+
 from app.schemas import GuidanceRule, SafetyLevel
 
 
@@ -33,11 +35,74 @@ DEFAULT_GUIDANCE_RULES = [
     GuidanceRule(
         id="breakup-support",
         topic="breakup",
-        tags=["breakup", "ex", "dumped", "relationship"],
+        tags=["breakup", "ex", "dumped", "relationship", "heartbreak"],
         goal="Help the user tolerate the emotional wave without impulsive contact.",
         do_rules=["Validate the pain without dramatizing it.", "Suggest delaying reactive messages.", "Ask one grounding question."],
         avoid_rules=["Do not encourage stalking, revenge, or pressure."],
         priority=70,
+    ),
+    GuidanceRule(
+        id="anxiety-grounding",
+        topic="anxiety",
+        tags=["anxiety", "anxious", "overthinking", "spiral", "worried"],
+        goal="Help the user slow the spiral and name the next concrete action.",
+        do_rules=["Use steady pacing.", "Separate facts from feared outcomes.", "Offer one grounding step."],
+        avoid_rules=["Do not argue with the fear at length.", "Do not promise certainty."],
+        priority=75,
+    ),
+    GuidanceRule(
+        id="divorce-support",
+        topic="divorce",
+        tags=["divorce", "separation", "custody", "co-parent", "lawyer"],
+        goal="Help the user stay grounded during practical and emotional divorce pressure.",
+        do_rules=["Acknowledge the stakes.", "Encourage one practical next step.", "Keep advice emotionally steady."],
+        avoid_rules=["Do not give legal advice.", "Do not escalate conflict with the former partner."],
+        priority=72,
+    ),
+    GuidanceRule(
+        id="dating-stress",
+        topic="dating",
+        tags=["dating", "date", "rejected", "ghosted", "text back"],
+        goal="Help the user respond from self-respect instead of panic or performance pressure.",
+        do_rules=["Normalize uncertainty.", "Encourage a direct but low-pressure action.", "Protect the user's dignity."],
+        avoid_rules=["Do not encourage games, pressure, or manipulation."],
+        priority=66,
+    ),
+    GuidanceRule(
+        id="wedding-pressure",
+        topic="wedding stress",
+        tags=["wedding", "fiance", "fiancee", "engagement", "married"],
+        goal="Help the user separate relationship care from event pressure.",
+        do_rules=["Name competing pressures.", "Suggest one calm conversation or boundary.", "Keep focus on values."],
+        avoid_rules=["Do not frame normal nerves as a diagnosis.", "Do not push a major decision from one message."],
+        priority=68,
+    ),
+    GuidanceRule(
+        id="loneliness-support",
+        topic="loneliness",
+        tags=["lonely", "alone", "isolated", "no one", "disconnected"],
+        goal="Help the user feel less alone while identifying one safe connection step.",
+        do_rules=["Reflect the isolation plainly.", "Suggest a small reachable contact.", "Avoid pressure or shame."],
+        avoid_rules=["Do not create dependency on Forge.", "Do not imply the app replaces people."],
+        priority=74,
+    ),
+    GuidanceRule(
+        id="fatherhood-pressure",
+        topic="fatherhood",
+        tags=["father", "dad", "kid", "children", "parent"],
+        goal="Help the user handle provider, patience, and family pressure without self-attack.",
+        do_rules=["Respect the responsibility.", "Focus on repair and the next calm action.", "Use practical language."],
+        avoid_rules=["Do not shame the user.", "Do not minimize family stress."],
+        priority=64,
+    ),
+    GuidanceRule(
+        id="family-conflict",
+        topic="family conflict",
+        tags=["family", "parents", "brother", "sister", "argument", "conflict"],
+        goal="Help the user lower reactivity and choose a boundary or repair step.",
+        do_rules=["Name the relational pressure.", "Suggest space before hard conversations.", "Offer one boundary phrase."],
+        avoid_rules=["Do not encourage cutoff as the first move.", "Do not assign blame without context."],
+        priority=62,
     ),
 ]
 
@@ -49,12 +114,19 @@ def retrieve_guidance(message: str, rules: list[GuidanceRule] | None = None, lim
     for rule in rules:
         if not rule.active:
             continue
-        keyword_score = sum(1 for tag in rule.tags if tag.lower() in normalized)
-        topic_score = 2 if rule.topic.lower() in normalized else 0
+        keyword_score = sum(1 for tag in rule.tags if _matches_phrase(normalized, tag))
+        topic_score = 2 if _matches_phrase(normalized, rule.topic) else 0
         score = keyword_score + topic_score + rule.priority
         if keyword_score or topic_score:
             scored.append((score, rule))
     return [rule for _, rule in sorted(scored, key=lambda item: item[0], reverse=True)[:limit]]
+
+
+def _matches_phrase(normalized_message: str, phrase: str) -> bool:
+    normalized_phrase = phrase.lower().strip()
+    if len(normalized_phrase) <= 3:
+        return re.search(rf"\b{re.escape(normalized_phrase)}\b", normalized_message) is not None
+    return normalized_phrase in normalized_message
 
 
 def build_guidance_prompt_block(rules: list[GuidanceRule]) -> str:
