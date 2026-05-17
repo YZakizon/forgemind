@@ -16,6 +16,7 @@ from app.schemas import (
     GuidanceCreate,
     GuidanceRule,
     MemoryListResponse,
+    SafetyEventListResponse,
     SafetyLevel,
     SubscriptionValidationRequest,
     SubscriptionValidationResponse,
@@ -192,6 +193,17 @@ def safety_classify(payload: ChatRequest):
     result = classify_safety(payload.message)
     SAFETY_EVENTS.labels(result.level.value).inc()
     return result
+
+
+@app.get("/safety/events", response_model=SafetyEventListResponse)
+def list_safety_events() -> SafetyEventListResponse:
+    async def _list() -> SafetyEventListResponse:
+        try:
+            return SafetyEventListResponse(items=await store.list_safety_events())
+        except Exception:
+            return SafetyEventListResponse(items=[])
+
+    return asyncio.run(_list())
 
 
 @app.get("/guidance/rules", response_model=list[GuidanceRule])

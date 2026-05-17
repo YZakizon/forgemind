@@ -52,13 +52,20 @@ a {
 
 .sidebar a,
 button,
-.metricLink {
+.metricLink,
+code {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
   color: var(--text);
   padding: 10px 12px;
   font: inherit;
+}
+
+code {
+  color: var(--accent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
 }
 
 .content {
@@ -109,9 +116,17 @@ button,
 
 .row {
   display: grid;
-  grid-template-columns: 1fr 140px 100px;
   padding: 14px 16px;
   border-top: 1px solid var(--line);
+}
+
+.guidanceRow,
+.memoryRow {
+  grid-template-columns: minmax(0, 1fr) 110px 90px 100px;
+}
+
+.safetyRow {
+  grid-template-columns: 110px minmax(0, 1fr) 190px;
 }
 
 .row:first-child {
@@ -121,6 +136,23 @@ button,
 .head {
   background: var(--surface-2);
   color: var(--muted);
+}
+
+.row strong,
+.row small {
+  display: block;
+}
+
+.row small {
+  color: var(--muted);
+  margin-top: 4px;
+  line-height: 1.35;
+}
+
+.emptyRow {
+  padding: 18px 16px;
+  color: var(--muted);
+  border-top: 1px solid var(--line);
 }
 
 p {
@@ -139,6 +171,12 @@ p {
   }
 
   .grid {
+    grid-template-columns: 1fr;
+  }
+
+  .guidanceRow,
+  .memoryRow,
+  .safetyRow {
     grid-template-columns: 1fr;
   }
 }
