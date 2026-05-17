@@ -14,6 +14,7 @@ from app.schemas import (
     AuthUser,
     ChatRequest,
     ChatResponse,
+    DataControlResponse,
     GuidanceCreate,
     GuidanceRule,
     MemoryListResponse,
@@ -26,6 +27,7 @@ from app.schemas import (
     SafetyLevel,
     SubscriptionValidationRequest,
     SubscriptionValidationResponse,
+    UserDataExport,
 )
 from app.services.ai import validate_response_safety
 from app.services.auth import extract_bearer_token, issue_access_token, verify_access_token, verify_identity_token
@@ -100,6 +102,16 @@ def auth_me(authorization: str | None = Header(default=None)) -> AuthUser:
     except ValueError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     return AuthUser(user_id=user_id)
+
+
+def _require_user_access(user_id: str, authorization: str | None) -> None:
+    try:
+        token = extract_bearer_token(authorization)
+        token_user_id = verify_access_token(token)
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    if token_user_id != user_id:
+        raise HTTPException(status_code=403, detail="access token does not match requested user")
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -301,6 +313,51 @@ def list_memories(user_id: str) -> MemoryListResponse:
             return MemoryListResponse(items=[])
 
     return asyncio.run(_list())
+
+
+@app.post("/memories/archive", response_model=DataControlResponse)
+def archive_memories(user_id: str, authorization: str | None = Header(default=None)) -> DataControlResponse:
+    _require_user_access(user_id, authorization)
+
+    async def _archive() -> int:
+        return await store.archive_user_memories(user_id)
+
+    try:
+        archived = asyncio.run(_archive())
+        capture_event("memories_archived", {"user_id": user_id, "count": archived})
+        return DataControlResponse(user_id=user_id, status="archived", detail=f"Archived {archived} active memories.")
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Memory archive is unavailable") from exc
+
+
+@app.get("/users/{user_id}/export", response_model=UserDataExport)
+def export_user_data(user_id: str, authorization: str | None = Header(default=None)) -> UserDataExport:
+    _require_user_access(user_id, authorization)
+
+    async def _export() -> UserDataExport:
+        return await store.export_user_data(user_id)
+
+    try:
+        result = asyncio.run(_export())
+        capture_event("user_data_exported", {"user_id": user_id})
+        return result
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Data export is unavailable") from exc
+
+
+@app.delete("/users/{user_id}/data", response_model=DataControlResponse)
+def delete_user_data(user_id: str, authorization: str | None = Header(default=None)) -> DataControlResponse:
+    _require_user_access(user_id, authorization)
+
+    async def _delete() -> None:
+        await store.delete_user_data(user_id)
+
+    try:
+        asyncio.run(_delete())
+        capture_event("user_data_deleted", {"user_id": user_id})
+        return DataControlResponse(user_id=user_id, status="deleted", detail="Deleted stored chat, memory, check-in, reset, subscription, and safety data.")
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Data deletion is unavailable") from exc
 
 
 @app.post("/mood-checkins", response_model=MoodCheckin)

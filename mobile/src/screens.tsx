@@ -20,9 +20,12 @@ import {
   VoiceRecordingState
 } from "./components";
 import {
+  archiveMemories,
   completeResetSession,
   createMoodCheckin,
   createResetSession,
+  deleteUserData,
+  exportUserData,
   fetchProgressSummary,
   sendChatMessage,
   sendVoiceMessage,
@@ -518,6 +521,39 @@ export function ProgressScreen() {
 }
 
 export function ProfileScreen() {
+  const [status, setStatus] = useState<string | null>(null);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+
+  async function runDataControl(action: "archive" | "export" | "delete") {
+    if (action !== "delete") {
+      setConfirmingDelete(false);
+    }
+    if (action === "delete" && !confirmingDelete) {
+      setConfirmingDelete(true);
+      setStatus("Tap Delete my data again to confirm.");
+      return;
+    }
+    setStatus(action === "archive" ? "Archiving memories..." : action === "export" ? "Preparing export..." : "Deleting stored data...");
+    try {
+      if (action === "archive") {
+        const result = await archiveMemories();
+        setStatus(result.detail);
+        return;
+      }
+      if (action === "export") {
+        const result = await exportUserData();
+        const count = result.memories.length + result.mood_checkins.length + result.reset_sessions.length + result.chat_messages.length;
+        setStatus(`Export ready with ${count} records.`);
+        return;
+      }
+      const result = await deleteUserData();
+      setConfirmingDelete(false);
+      setStatus(result.detail);
+    } catch {
+      setStatus("Data control could not sync. Try again with the backend running.");
+    }
+  }
+
   return (
     <AppScreen>
       <View style={styles.profileHeader}>
@@ -538,11 +574,12 @@ export function ProfileScreen() {
 
       <Card>
         <Text style={styles.sectionTitle}>Your privacy, your control</Text>
-        <SettingsRow label="Memory controls" icon="memory" />
-        <SettingsRow label="Delete my data" icon="trash" />
-        <SettingsRow label="Export my data" icon="export" />
+        <SettingsRow label="Memory controls" icon="memory" onPress={() => runDataControl("archive")} />
+        <SettingsRow label="Delete my data" value={confirmingDelete ? "Confirm" : undefined} icon="trash" onPress={() => runDataControl("delete")} />
+        <SettingsRow label="Export my data" icon="export" onPress={() => runDataControl("export")} />
         <SettingsRow label="Privacy settings" icon="privacy" />
       </Card>
+      {status ? <Text style={styles.syncStatus}>{status}</Text> : null}
 
       <Card>
         <Text style={styles.sectionTitle}>Preferences</Text>

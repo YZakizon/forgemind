@@ -168,6 +168,20 @@ class ProgressSummary(BaseModel):
     recent_resets: list[ResetSession] = []
 
 
+class UserDataExport(BaseModel):
+    user_id: str
+    memories: list[MemoryCandidate] = []
+    mood_checkins: list[MoodCheckin] = []
+    reset_sessions: list[ResetSession] = []
+    chat_messages: list[dict[str, str | None]] = []
+
+
+class DataControlResponse(BaseModel):
+    user_id: str
+    status: str
+    detail: str
+
+
 class MemoryListResponse(BaseModel):
     items: list[MemoryCandidate]
 

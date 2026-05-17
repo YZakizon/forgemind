@@ -5,11 +5,15 @@ from jwt import InvalidTokenError
 from app.config import get_settings
 from app.schemas import AuthProvider
 
+DEMO_USER_ID = "00000000-0000-4000-8000-000000000001"
+
 
 def verify_identity_token(provider: AuthProvider, identity_token: str) -> str:
     # TODO: Replace this local verifier with Google and Apple public-key validation in production.
     if not identity_token or len(identity_token) < 8:
         raise ValueError("identity token is invalid")
+    if identity_token == "demo-token":
+        return DEMO_USER_ID
     return str(uuid5(NAMESPACE_URL, f"{provider}:{identity_token}"))
 
 

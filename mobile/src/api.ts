@@ -8,6 +8,7 @@ const { ForgeMindConfig } = NativeModules as {
 
 export const API_BASE_URL = ForgeMindConfig?.API_BASE_URL ?? "http://127.0.0.1:8005";
 export const DEMO_USER_ID = "00000000-0000-4000-8000-000000000001";
+let demoAccessToken: string | null = null;
 
 export type ForgeChatResponse = {
   response: string;
@@ -45,6 +46,42 @@ export type ProgressSummary = {
   recent_checkins: MoodCheckin[];
   recent_resets: ResetSession[];
 };
+
+export type DataControlResponse = {
+  user_id: string;
+  status: string;
+  detail: string;
+};
+
+export type UserDataExport = {
+  user_id: string;
+  memories: unknown[];
+  mood_checkins: MoodCheckin[];
+  reset_sessions: ResetSession[];
+  chat_messages: Array<Record<string, string | null>>;
+};
+
+async function ensureDemoAccessToken(): Promise<string> {
+  if (demoAccessToken) return demoAccessToken;
+  const response = await fetch(`${API_BASE_URL}/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ provider: "google", identity_token: "demo-token" })
+  });
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  const result = (await response.json()) as { access_token: string; user_id: string };
+  if (result.user_id !== DEMO_USER_ID) {
+    throw new Error("Demo token did not match the demo user.");
+  }
+  demoAccessToken = result.access_token;
+  return demoAccessToken;
+}
+
+async function authHeaders() {
+  return { Authorization: `Bearer ${await ensureDemoAccessToken()}` };
+}
 
 export async function sendChatMessage(message: string, mode: Mode): Promise<ForgeChatResponse> {
   const response = await fetch(`${API_BASE_URL}/chat`, {
@@ -94,6 +131,38 @@ export async function completeResetSession(resetId: string): Promise<ResetSessio
 
 export async function fetchProgressSummary(): Promise<ProgressSummary> {
   const response = await fetch(`${API_BASE_URL}/progress/summary?user_id=${DEMO_USER_ID}`);
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  return response.json();
+}
+
+export async function archiveMemories(): Promise<DataControlResponse> {
+  const response = await fetch(`${API_BASE_URL}/memories/archive?user_id=${DEMO_USER_ID}`, {
+    method: "POST",
+    headers: await authHeaders()
+  });
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  return response.json();
+}
+
+export async function exportUserData(): Promise<UserDataExport> {
+  const response = await fetch(`${API_BASE_URL}/users/${DEMO_USER_ID}/export`, {
+    headers: await authHeaders()
+  });
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  return response.json();
+}
+
+export async function deleteUserData(): Promise<DataControlResponse> {
+  const response = await fetch(`${API_BASE_URL}/users/${DEMO_USER_ID}/data`, {
+    method: "DELETE",
+    headers: await authHeaders()
+  });
   if (!response.ok) {
     throw new Error(await response.text());
   }
