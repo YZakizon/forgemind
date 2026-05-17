@@ -432,12 +432,30 @@ export function SectionTitle({ children }: { children: React.ReactNode }) {
   return <Text style={styles.sectionTitle}>{children}</Text>;
 }
 
-export function MessageInput() {
+export function MessageInput({
+  value,
+  onChangeText,
+  onSubmit,
+  disabled = false
+}: {
+  value: string;
+  onChangeText: (value: string) => void;
+  onSubmit: () => void;
+  disabled?: boolean;
+}) {
   return (
     <View style={styles.inputWrap}>
-      <TextInput placeholder="Type a message..." placeholderTextColor={colors.muted} style={styles.input} />
-      <TouchableOpacity style={styles.micButton}>
-        <AppIcon name="mic" color={colors.text} size={20} />
+      <TextInput
+        placeholder="Type a message..."
+        placeholderTextColor={colors.muted}
+        style={styles.input}
+        value={value}
+        onChangeText={onChangeText}
+        editable={!disabled}
+        onSubmitEditing={onSubmit}
+      />
+      <TouchableOpacity style={[styles.micButton, disabled && styles.micButtonDisabled]} onPress={onSubmit} disabled={disabled}>
+        <AppIcon name="send" color={colors.text} size={20} />
       </TouchableOpacity>
     </View>
   );
@@ -929,6 +947,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: colors.accent
+  },
+  micButtonDisabled: {
+    opacity: 0.5
   },
   micIcon: {
     color: colors.text,
