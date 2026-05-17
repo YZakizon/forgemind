@@ -5,6 +5,7 @@ description = "ForgeMind FastAPI backend"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi==0.115.6",
+    "python-multipart==0.0.20",
     "uvicorn[standard]==0.32.1",
     "pydantic==2.10.4",
     "pydantic-settings==2.7.0",

@@ -14,7 +14,7 @@ const rules = [
 ];
 
 export default function AdminHome() {
-  const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://192.168.0.x:8005";
+  const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8005";
 
   return (
     <main className="shell">

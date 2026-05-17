@@ -24,12 +24,17 @@ Install Python dependencies with `uv`. If `uv` is not installed yet:
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-For LAN testing with a phone, use your machine's `192.168.0.x` address:
+For LAN testing with a phone, use your machine's `192.168.0.106` address as the public backend/admin host.
+The backend listener defaults to `0.0.0.0` so both LAN access and Android USB reverse can reach it.
+For a USB-connected Android demo, `make android-tunnel` forwards both Metro `8085` and backend `8005`, and the mobile app calls `http://127.0.0.1:8005`.
+Set `API_BASE_URL` in `mobile/.env.local`, root `.env.local`, or the shell when the mobile app should call a different backend URL. Reinstall the Android app after changing it because the value is compiled into native build config.
+The root `.env` is the highest-priority local development file. Service-local files such as `backend/.env.local`, `admin/.env.local`, and `mobile/.env.local` can exist, but duplicate keys in root `.env` win.
 
 ```bash
-make backend HOST=192.168.0.x
-make frontend HOST=192.168.0.x
+make backend BACKEND_BIND_HOST=0.0.0.0 BACKEND_HOST=192.168.0.106
+make frontend ADMIN_HOST=192.168.0.106
 make mobile
+make android-install API_BASE_URL=http://192.168.0.106:8005
 ```
 
 Default app ports:
@@ -50,7 +55,7 @@ Run backend:
 cd backend
 uv sync
 uv run alembic upgrade head
-uv run uvicorn app.main:app --reload --host 192.168.0.x --port 8005
+uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8005
 ```
 
 Run backend tests:
@@ -68,7 +73,7 @@ npm install
 npm run dev
 ```
 
-The admin dashboard runs on `http://192.168.0.x:3005` when started through `make frontend`.
+The admin dashboard runs on `http://192.168.0.106:3005` when started through `make frontend`.
 
 Run mobile:
 
@@ -79,13 +84,15 @@ npm run start -- --host 0.0.0.0 --port 8085
 npm run android -- --port 8085
 ```
 
-Metro runs on port `8085`. Use your actual `192.168.0.x` LAN IP so a physical Android phone can reach the backend and Metro server.
+Metro runs on port `8085`. `make android-install` runs the USB tunnel before installing the app.
+The mobile UI uses React Navigation bottom tabs and mock preview state for Home, Talk, Tap-to-Talk Voice, Reset, Progress, Profile, mode selection, and voice-state cards. For LAN testing, rebuild/reinstall the Android app after changing `API_BASE_URL`.
 
 ## API Highlights
 
 - `GET /health`
 - `POST /auth/login`
 - `POST /chat`
+- `POST /voice-chat`
 - `POST /safety/classify`
 - `GET/POST/PUT/DELETE /guidance/rules`
 - `GET /memories`
@@ -102,7 +109,11 @@ The MVP follows the required flow:
 4. re-rank by `similarity * 0.50 + importance * 0.25 + recency * 0.15 + active_status * 0.10`
 5. inject only the top 3-5 memories into prompts
 
-The pure ranking/filtering code is implemented in `backend/app/services/memory.py`; database-backed vector search is represented in the migration and ready to connect to the OpenAI embedding call.
+The pure ranking/filtering code is implemented in `backend/app/services/memory.py`; `/chat` now creates embeddings, retrieves pgvector memory candidates, saves chat messages, and extracts durable memories when Postgres is available. If Postgres is unavailable, the demo falls back to in-memory guidance and template responses instead of failing.
+
+## AI and Voice
+
+`/chat` uses the OpenAI provider when `OPENAI_API_KEY` is set, with local fallback responses when it is not. `/voice-chat` accepts an uploaded audio file, transcribes it through the configured OpenAI transcription model, then routes the transcript through the same chat, safety, guidance, and memory flow. The Android app includes a native recorder module for `.m4a` voice capture.
 
 ## Credential TODOs
 
@@ -110,9 +121,9 @@ The pure ranking/filtering code is implemented in `backend/app/services/memory.p
 - Add real Apple identity-token verification credentials.
 - Add StoreKit server API credentials.
 - Add Google Play Billing API credentials.
-- Add `OPENAI_API_KEY` for production AI and embedding calls.
+- Add `OPENAI_API_KEY` for AI responses, embeddings, and voice transcription.
 - Add `SENTRY_DSN` and `POSTHOG_API_KEY` for production observability.
 
 ## MVP Boundaries
 
-This repo intentionally does not use Expo, Supabase, RevenueCat, or S3. Voice UI is represented as a placeholder because voice is later scope in the product plan.
+This repo intentionally does not use Expo, Supabase, RevenueCat, or S3.

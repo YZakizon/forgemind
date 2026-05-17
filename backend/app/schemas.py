@@ -43,6 +43,8 @@ class ChatResponse(BaseModel):
     safety_level: SafetyLevel
     memories_used: list[str] = []
     guidance_topics: list[str] = []
+    transcript: str | None = None
+    persisted: bool = False
 
 
 class MemoryCandidate(BaseModel):
@@ -111,3 +113,7 @@ class SubscriptionValidationResponse(BaseModel):
     valid: bool
     entitlement: str
     message: str
+
+
+class MemoryListResponse(BaseModel):
+    items: list[MemoryCandidate]

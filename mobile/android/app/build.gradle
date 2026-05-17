@@ -71,6 +71,7 @@ def enableProguardInReleaseBuilds = false
  * this variant is about 6MiB larger per architecture than default.
  */
 def jscFlavor = 'org.webkit:android-jsc:+'
+def forgemindApiBaseUrl = System.getenv("API_BASE_URL") ?: "http://127.0.0.1:8005"
 
 android {
     ndkVersion rootProject.ext.ndkVersion
@@ -84,6 +85,7 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1
         versionName "1.0"
+        buildConfigField "String", "API_BASE_URL", "\"${forgemindApiBaseUrl}\""
     }
     signingConfigs {
         debug {
