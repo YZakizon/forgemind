@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { NativeModules, PermissionsAndroid, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 
 import {
@@ -267,6 +267,7 @@ const { ForgeMindAudioRecorder } = NativeModules as {
   ForgeMindAudioRecorder?: {
     start: () => Promise<string>;
     stop: () => Promise<string>;
+    cancel: () => Promise<void>;
   };
 };
 
@@ -292,6 +293,33 @@ function VoiceScreen({
   const [recording, setRecording] = useState(false);
   const [status, setStatus] = useState("Tap to start");
   const [busy, setBusy] = useState(false);
+  const recordingRef = useRef(false);
+
+  useEffect(() => {
+    return () => {
+      if (recordingRef.current && ForgeMindAudioRecorder) {
+        ForgeMindAudioRecorder.cancel().catch(() => undefined);
+        recordingRef.current = false;
+      }
+    };
+  }, []);
+
+  async function cancelRecording() {
+    if (recordingRef.current && ForgeMindAudioRecorder) {
+      await ForgeMindAudioRecorder.cancel();
+      recordingRef.current = false;
+      setRecording(false);
+    }
+  }
+
+  async function handleBack() {
+    if (busy) return;
+    try {
+      await cancelRecording();
+    } finally {
+      onBack();
+    }
+  }
 
   async function toggleRecording() {
     if (busy || !ForgeMindAudioRecorder) return;
@@ -303,6 +331,7 @@ function VoiceScreen({
           return;
         }
         await ForgeMindAudioRecorder.start();
+        recordingRef.current = true;
         setRecording(true);
         setStatus("Tap to stop");
         return;
@@ -311,12 +340,14 @@ function VoiceScreen({
       setBusy(true);
       setStatus("Sending...");
       const path = await ForgeMindAudioRecorder.stop();
+      recordingRef.current = false;
       const result = await sendVoiceMessage(path, mode);
       onResponse(result);
     } catch {
       onError();
       setStatus("Tap to try again");
     } finally {
+      recordingRef.current = false;
       setRecording(false);
       setBusy(false);
     }
@@ -324,7 +355,7 @@ function VoiceScreen({
 
   return (
     <AppScreen>
-      <TouchableOpacity onPress={onBack}>
+      <TouchableOpacity onPress={handleBack}>
         <AppHeader title="Forge" leftIcon="back" rightIcon="sliders" />
       </TouchableOpacity>
 
