@@ -1,5 +1,5 @@
-import React, { useState } from "react";
-import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import React, { useEffect, useRef, useState } from "react";
+import { NativeModules, PermissionsAndroid, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 
 import {
   AppHeader,
@@ -19,6 +19,7 @@ import {
   VoiceOrb,
   VoiceRecordingState
 } from "./components";
+import { sendChatMessage, sendVoiceMessage } from "./api";
 import { colors, radii, spacing } from "./design";
 import type { OnboardingPreferences } from "./preferences";
 
@@ -167,9 +168,52 @@ export function TalkScreen() {
   const [mode, setMode] = useState<Mode>("Clarity");
   const [sheetOpen, setSheetOpen] = useState(false);
   const [listening, setListening] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [messages, setMessages] = useState<Array<{ id: string; role: "forge" | "user"; text: string }>>([
+    { id: "m1", role: "forge", text: "I’m here, Yeffry. What’s on your mind?" },
+    { id: "m2", role: "user", text: "I feel so overwhelmed with work and life right now." },
+    { id: "m3", role: "forge", text: "That’s a lot to carry. Let’s slow it down. What’s been the hardest part today?" }
+  ]);
+
+  async function submitMessage(text = draft) {
+    const trimmed = text.trim();
+    if (!trimmed || sending) return;
+    setDraft("");
+    setError(null);
+    setSending(true);
+    setMessages((current) => [...current, { id: `user-${Date.now()}`, role: "user", text: trimmed }]);
+    try {
+      const result = await sendChatMessage(trimmed, mode);
+      setMessages((current) => [...current, { id: `forge-${Date.now()}`, role: "forge", text: result.response }]);
+    } catch {
+      setError("Forge couldn’t reach the backend. Check the server and try again.");
+    } finally {
+      setSending(false);
+    }
+  }
+
+  function appendVoiceResponse(text: string, transcript?: string | null) {
+    if (transcript) {
+      setMessages((current) => [...current, { id: `voice-${Date.now()}`, role: "user", text: transcript }]);
+    }
+    setMessages((current) => [...current, { id: `forge-${Date.now()}`, role: "forge", text }]);
+  }
 
   if (listening) {
-    return <VoiceScreen mode={mode} onModeChange={setMode} onBack={() => setListening(false)} />;
+    return (
+      <VoiceScreen
+        mode={mode}
+        onModeChange={setMode}
+        onBack={() => setListening(false)}
+        onResponse={(result) => {
+          appendVoiceResponse(result.response, result.transcript);
+          setListening(false);
+        }}
+        onError={() => setError("Forge couldn’t process that recording. Try again when the backend is available.")}
+      />
+    );
   }
 
   return (
@@ -177,20 +221,24 @@ export function TalkScreen() {
       <AppHeader title="Forge" leftIcon="back" rightIcon="sliders" />
 
       <View style={styles.chatStack}>
-        <ChatBubble role="forge">I’m here, Yeffry. What’s on your mind?</ChatBubble>
-        <ChatBubble role="user">I feel so overwhelmed with work and life right now.</ChatBubble>
-        <ChatBubble role="forge">That’s a lot to carry. Let’s slow it down. What’s been the hardest part today?</ChatBubble>
+        {messages.map((message) => (
+          <ChatBubble key={message.id} role={message.role}>
+            {message.text}
+          </ChatBubble>
+        ))}
+        {sending ? <ChatBubble role="forge">Forge is thinking...</ChatBubble> : null}
       </View>
 
       <View style={styles.suggestionRow}>
         {["It’s the pressure", "No time for myself", "I don’t know"].map((item) => (
-          <TouchableOpacity key={item} style={styles.suggestionChip}>
+          <TouchableOpacity key={item} style={styles.suggestionChip} onPress={() => submitMessage(item)}>
             <Text style={styles.suggestionText}>{item}</Text>
           </TouchableOpacity>
         ))}
       </View>
 
-      <MessageInput />
+      <MessageInput value={draft} onChangeText={setDraft} onSubmit={() => submitMessage()} disabled={sending} />
+      {error ? <Text style={styles.errorText}>{error}</Text> : null}
 
       <TouchableOpacity style={styles.voicePreview} onPress={() => setListening(true)} activeOpacity={0.86}>
         <View>
@@ -215,17 +263,108 @@ export function TalkScreen() {
   );
 }
 
-function VoiceScreen({ mode, onModeChange, onBack }: { mode: Mode; onModeChange: (mode: Mode) => void; onBack: () => void }) {
+const { ForgeMindAudioRecorder } = NativeModules as {
+  ForgeMindAudioRecorder?: {
+    start: () => Promise<string>;
+    stop: () => Promise<string>;
+    cancel: () => Promise<void>;
+  };
+};
+
+async function ensureRecordPermission() {
+  if (Platform.OS !== "android") return true;
+  const result = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.RECORD_AUDIO);
+  return result === PermissionsAndroid.RESULTS.GRANTED;
+}
+
+function VoiceScreen({
+  mode,
+  onModeChange,
+  onBack,
+  onResponse,
+  onError
+}: {
+  mode: Mode;
+  onModeChange: (mode: Mode) => void;
+  onBack: () => void;
+  onResponse: (result: Awaited<ReturnType<typeof sendVoiceMessage>>) => void;
+  onError: () => void;
+}) {
+  const [recording, setRecording] = useState(false);
+  const [status, setStatus] = useState("Tap to start");
+  const [busy, setBusy] = useState(false);
+  const recordingRef = useRef(false);
+
+  useEffect(() => {
+    return () => {
+      if (recordingRef.current && ForgeMindAudioRecorder) {
+        ForgeMindAudioRecorder.cancel().catch(() => undefined);
+        recordingRef.current = false;
+      }
+    };
+  }, []);
+
+  async function cancelRecording() {
+    if (recordingRef.current && ForgeMindAudioRecorder) {
+      await ForgeMindAudioRecorder.cancel();
+      recordingRef.current = false;
+      setRecording(false);
+    }
+  }
+
+  async function handleBack() {
+    if (busy) return;
+    try {
+      await cancelRecording();
+    } finally {
+      onBack();
+    }
+  }
+
+  async function toggleRecording() {
+    if (busy || !ForgeMindAudioRecorder) return;
+    try {
+      if (!recording) {
+        const granted = await ensureRecordPermission();
+        if (!granted) {
+          setStatus("Microphone permission is needed.");
+          return;
+        }
+        await ForgeMindAudioRecorder.start();
+        recordingRef.current = true;
+        setRecording(true);
+        setStatus("Tap to stop");
+        return;
+      }
+
+      setBusy(true);
+      setStatus("Sending...");
+      const path = await ForgeMindAudioRecorder.stop();
+      recordingRef.current = false;
+      const result = await sendVoiceMessage(path, mode);
+      onResponse(result);
+    } catch {
+      onError();
+      setStatus("Tap to try again");
+    } finally {
+      recordingRef.current = false;
+      setRecording(false);
+      setBusy(false);
+    }
+  }
+
   return (
     <AppScreen>
-      <TouchableOpacity onPress={onBack}>
+      <TouchableOpacity onPress={handleBack}>
         <AppHeader title="Forge" leftIcon="back" rightIcon="sliders" />
       </TouchableOpacity>
 
       <View style={styles.voiceCenter}>
-        <Text style={styles.listeningTitle}>Listening...</Text>
-        <VoiceOrb active />
-        <Text style={styles.tapStop}>Tap to stop</Text>
+        <Text style={styles.listeningTitle}>{recording ? "Listening..." : busy ? "Sending..." : "Tap-to-Talk"}</Text>
+        <TouchableOpacity onPress={toggleRecording} activeOpacity={0.86} disabled={busy}>
+          <VoiceOrb active={recording} />
+        </TouchableOpacity>
+        <Text style={styles.tapStop}>{status}</Text>
         <Text style={styles.voiceInstruction}>Speak naturally. I’m listening.</Text>
       </View>
 
@@ -510,6 +649,11 @@ const styles = StyleSheet.create({
     color: colors.secondaryText,
     fontSize: 13,
     fontWeight: "700"
+  },
+  errorText: {
+    color: colors.danger,
+    fontSize: 13,
+    lineHeight: 18
   },
   modeHeader: {
     flexDirection: "row",

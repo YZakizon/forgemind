@@ -65,4 +65,21 @@ class ForgeMindAudioModule(private val reactContext: ReactApplicationContext) :
       currentPath = null
     }
   }
+
+  @ReactMethod
+  fun cancel(promise: Promise) {
+    val path = currentPath
+    try {
+      recorder?.release()
+      if (path != null) {
+        File(path).delete()
+      }
+      promise.resolve(null)
+    } catch (error: Exception) {
+      promise.reject("record_cancel_failed", error.message, error)
+    } finally {
+      recorder = null
+      currentPath = null
+    }
+  }
 }
