@@ -3,8 +3,29 @@ import asyncio
 from app.services import store
 
 
+class FakeMappings:
+    def __init__(self, rows=None):
+        self.rows = rows or []
+
+    def one(self):
+        return self.rows[0]
+
+    def one_or_none(self):
+        return self.rows[0] if self.rows else None
+
+    def __iter__(self):
+        return iter(self.rows)
+
+
 class FakeResult:
-    pass
+    rowcount = 0
+
+    def __init__(self, rows=None, rowcount=0):
+        self.rows = rows or []
+        self.rowcount = rowcount
+
+    def mappings(self):
+        return FakeMappings(self.rows)
 
 
 class FakeSession:
@@ -50,4 +71,42 @@ def test_subscription_validation_store_sql_is_complete(monkeypatch):
     assert "store_transaction_id" in statement
     assert "VALUES (" in statement
     assert ":store_transaction_id\n                )" in statement
+    assert session.committed
+
+
+def test_archive_user_memories_marks_active_memories_archived(monkeypatch):
+    class ArchiveSession(FakeSession):
+        async def execute(self, statement, params):
+            self.statements.append(str(statement))
+            self.params = params
+            return FakeResult(rowcount=3)
+
+    session = ArchiveSession()
+    monkeypatch.setattr(store, "get_sessionmaker", lambda: lambda: session)
+
+    archived = asyncio.run(store.archive_user_memories("00000000-0000-4000-8000-000000000001"))
+
+    assert archived == 3
+    assert "SET status = 'archived'" in session.statements[0]
+    assert "archived_at" in session.statements[0]
+    assert session.committed
+
+
+def test_delete_user_data_clears_user_owned_tables(monkeypatch):
+    session = FakeSession()
+    monkeypatch.setattr(store, "get_sessionmaker", lambda: lambda: session)
+
+    asyncio.run(store.delete_user_data("00000000-0000-4000-8000-000000000001"))
+
+    joined = "\n".join(session.statements)
+    for table in [
+        "reset_sessions",
+        "mood_checkins",
+        "subscriptions",
+        "safety_events",
+        "memories",
+        "chat_messages",
+        "chat_sessions",
+    ]:
+        assert f"DELETE FROM {table}" in joined
     assert session.committed

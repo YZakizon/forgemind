@@ -16,6 +16,7 @@ from app.schemas import (
     ResetSession,
     SafetyEvent,
     SafetyLevel,
+    UserDataExport,
 )
 from app.services.guidance import DEFAULT_GUIDANCE_RULES
 
@@ -483,6 +484,103 @@ async def get_progress_summary(user_id: str) -> ProgressSummary:
         recent_checkins=[_mood_checkin_from_row(row) for row in checkins],
         recent_resets=[_reset_session_from_row(row) for row in resets],
     )
+
+
+async def archive_user_memories(user_id: str) -> int:
+    sessionmaker = get_sessionmaker()
+    async with sessionmaker() as session:
+        result = await session.execute(
+            text(
+                """
+                UPDATE memories
+                SET status = 'archived', archived_at = COALESCE(archived_at, now()), updated_at = now()
+                WHERE user_id = :user_id AND status = 'active'
+                """
+            ),
+            {"user_id": _uuid(user_id)},
+        )
+        await session.commit()
+    return int(result.rowcount or 0)
+
+
+async def export_user_data(user_id: str) -> UserDataExport:
+    memories = await list_user_memories(user_id)
+    sessionmaker = get_sessionmaker()
+    async with sessionmaker() as session:
+        checkins = list((
+            await session.execute(
+                text(
+                    """
+                    SELECT id, user_id, label, intensity, note, created_at
+                    FROM mood_checkins
+                    WHERE user_id = :user_id
+                    ORDER BY created_at DESC
+                    """
+                ),
+                {"user_id": _uuid(user_id)},
+            )
+        ).mappings())
+        resets = list((
+            await session.execute(
+                text(
+                    """
+                    SELECT id, user_id, reset_type, completed, notes, created_at, completed_at
+                    FROM reset_sessions
+                    WHERE user_id = :user_id
+                    ORDER BY created_at DESC
+                    """
+                ),
+                {"user_id": _uuid(user_id)},
+            )
+        ).mappings())
+        messages = list((
+            await session.execute(
+                text(
+                    """
+                    SELECT id, session_id, role, content, safety_level, created_at
+                    FROM chat_messages
+                    WHERE user_id = :user_id
+                    ORDER BY created_at DESC
+                    LIMIT 200
+                    """
+                ),
+                {"user_id": _uuid(user_id)},
+            )
+        ).mappings())
+    return UserDataExport(
+        user_id=user_id,
+        memories=memories,
+        mood_checkins=[_mood_checkin_from_row(row) for row in checkins],
+        reset_sessions=[_reset_session_from_row(row) for row in resets],
+        chat_messages=[
+            {
+                "id": str(row["id"]),
+                "session_id": str(row["session_id"]),
+                "role": row["role"],
+                "content": row["content"],
+                "safety_level": row["safety_level"],
+                "created_at": _aware(row["created_at"]).isoformat(),
+            }
+            for row in messages
+        ],
+    )
+
+
+async def delete_user_data(user_id: str) -> None:
+    parsed_user_id = _uuid(user_id)
+    sessionmaker = get_sessionmaker()
+    async with sessionmaker() as session:
+        for table in [
+            "reset_sessions",
+            "mood_checkins",
+            "subscriptions",
+            "safety_events",
+            "memories",
+            "chat_messages",
+            "chat_sessions",
+        ]:
+            await session.execute(text(f"DELETE FROM {table} WHERE user_id = :user_id"), {"user_id": parsed_user_id})
+        await session.commit()
 
 
 def _memory_from_row(row) -> MemoryCandidate:

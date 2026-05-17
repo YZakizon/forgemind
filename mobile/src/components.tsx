@@ -414,9 +414,9 @@ export function ResponseStreamingState() {
   );
 }
 
-export function SettingsRow({ label, value, icon }: { label: string; value?: string; icon?: IconName }) {
+export function SettingsRow({ label, value, icon, onPress }: { label: string; value?: string; icon?: IconName; onPress?: () => void }) {
   return (
-    <TouchableOpacity style={styles.settingsRow} activeOpacity={0.84}>
+    <TouchableOpacity style={styles.settingsRow} activeOpacity={0.84} onPress={onPress}>
       <View style={styles.settingsLabelWrap}>
         {icon ? <AppIcon name={icon} color={colors.secondaryText} size={18} /> : null}
         <Text style={styles.settingsLabel}>{label}</Text>

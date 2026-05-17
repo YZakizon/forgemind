@@ -97,6 +97,9 @@ The mobile UI uses React Navigation bottom tabs and mock preview state for Home,
 - `POST /safety/classify`
 - `GET/POST/PUT/DELETE /guidance/rules`
 - `GET /memories`
+- `POST /memories/archive`
+- `GET /users/{user_id}/export`
+- `DELETE /users/{user_id}/data`
 - `POST /mood-checkins`
 - `GET /progress/summary`
 - `POST /reset-sessions`
@@ -125,6 +128,10 @@ The safety gate now stops normal coaching for crisis and high-risk safety messag
 ## Progress and Reset Tracking
 
 Home quick check-ins persist to `mood_checkins`, Reset tools create and complete `reset_sessions`, and Progress reads `/progress/summary` for weekly check-in counts, completed resets, and top emotional themes. If the backend is unavailable, the mobile app keeps the calm preview state and shows a compact sync message.
+
+## Privacy Controls
+
+Profile privacy rows call backend data controls. Memory controls archive active memories, export returns stored memories, check-ins, reset sessions, and recent chat messages, and delete removes user-owned chat, memory, safety, subscription, check-in, and reset records while keeping the user account shell.
 
 ## AI and Voice
 
