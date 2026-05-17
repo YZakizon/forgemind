@@ -121,7 +121,7 @@ The pure ranking/filtering code is implemented in `backend/app/services/memory.p
 
 ## Auth, Safety, and Guidance
 
-`/auth/login` accepts Google or Apple provider tokens and issues ForgeMind JWT sessions. The MVP verifier keeps provider-specific, stable local subjects for development; production credentials still need Google and Apple public-key validation. `/auth/me` verifies bearer tokens and returns the current user id.
+`/auth/login` accepts Google or Apple provider tokens and issues ForgeMind JWT sessions. Development keeps a deterministic local verifier and the mobile demo token maps to the stable demo user. In production, demo tokens are rejected and provider config must be present; provider verification fails closed until real public-key validation is implemented. `/auth/me` verifies bearer tokens and returns the current user id.
 
 The safety gate now stops normal coaching for crisis and high-risk safety messages before prompt generation. Guidance coverage includes burnout, anxiety, anger, breakup, divorce, dating, wedding or fiance stress, loneliness, fatherhood, family conflict, and sleep support.
 
@@ -139,10 +139,10 @@ Profile privacy rows call backend data controls. Memory controls archive active 
 
 ## Credential TODOs
 
-- Add real Google identity-token verification credentials.
-- Add real Apple identity-token verification credentials.
-- Add StoreKit server API credentials.
-- Add Google Play Billing API credentials.
+- Set `GOOGLE_AUTH_AUDIENCE` for production Google identity-token verification.
+- Set `APPLE_AUTH_AUDIENCE` and `APPLE_AUTH_ISSUER` for production Apple identity-token verification.
+- Set `STOREKIT_ISSUER_ID`, `STOREKIT_KEY_ID`, and `STOREKIT_PRIVATE_KEY` before implementing production StoreKit validation.
+- Set `GOOGLE_PLAY_PACKAGE_NAME` and `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON` before implementing production Play Billing validation.
 - Add `OPENAI_API_KEY` for AI responses, embeddings, and voice transcription.
 - Add `SENTRY_DSN` and `POSTHOG_API_KEY` for production observability.
 

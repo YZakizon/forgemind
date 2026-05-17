@@ -1,13 +1,48 @@
+from app.config import Settings, get_settings
 from app.schemas import AuthProvider
 import pytest
 
-from app.services.auth import extract_bearer_token, issue_access_token, verify_access_token, verify_identity_token
+from app.services.auth import DEMO_USER_ID, extract_bearer_token, issue_access_token, verify_access_token, verify_identity_token
+
+
+def override_settings(monkeypatch, **overrides):
+    get_settings.cache_clear()
+    settings = Settings(**overrides)
+    monkeypatch.setattr("app.services.auth.get_settings", lambda: settings)
+    return settings
 
 
 def test_identity_token_stub_is_stable():
     first = verify_identity_token(AuthProvider.google, "valid-token")
     second = verify_identity_token(AuthProvider.google, "valid-token")
     assert first == second
+
+
+def test_demo_identity_token_is_development_only(monkeypatch):
+    override_settings(monkeypatch, environment="development")
+    assert verify_identity_token(AuthProvider.google, "demo-token") == DEMO_USER_ID
+
+    override_settings(monkeypatch, environment="production", google_auth_audience="forgemind")
+    with pytest.raises(ValueError, match="disabled"):
+        verify_identity_token(AuthProvider.google, "demo-token")
+
+
+def test_production_google_auth_requires_audience(monkeypatch):
+    override_settings(monkeypatch, environment="production")
+    with pytest.raises(ValueError, match="Google auth audience"):
+        verify_identity_token(AuthProvider.google, "valid-token")
+
+
+def test_production_apple_auth_requires_audience(monkeypatch):
+    override_settings(monkeypatch, environment="production")
+    with pytest.raises(ValueError, match="Apple auth audience"):
+        verify_identity_token(AuthProvider.apple, "valid-token")
+
+
+def test_production_auth_fails_closed_when_configured(monkeypatch):
+    override_settings(monkeypatch, environment="production", google_auth_audience="forgemind")
+    with pytest.raises(ValueError, match="not implemented"):
+        verify_identity_token(AuthProvider.google, "valid-token")
 
 
 def test_access_token_is_issued():

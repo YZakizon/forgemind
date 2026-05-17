@@ -1,12 +1,10 @@
-from fastapi.testclient import TestClient
+import pytest
+from fastapi import HTTPException
 
-from app.main import app
+from app.main import archive_memories, export_user_data, login
 from app.services.auth import DEMO_USER_ID, issue_access_token
-from app.schemas import DataControlResponse, UserDataExport
+from app.schemas import AuthProvider, AuthRequest, DataControlResponse, UserDataExport
 from app.services import store
-
-
-client = TestClient(app)
 
 
 def bearer(user_id: str = DEMO_USER_ID) -> dict[str, str]:
@@ -14,8 +12,9 @@ def bearer(user_id: str = DEMO_USER_ID) -> dict[str, str]:
 
 
 def test_data_controls_require_authentication():
-    response = client.get(f"/users/{DEMO_USER_ID}/export")
-    assert response.status_code == 401
+    with pytest.raises(HTTPException) as exc:
+        export_user_data(DEMO_USER_ID, authorization=None)
+    assert exc.value.status_code == 401
 
 
 def test_data_controls_reject_mismatched_user(monkeypatch):
@@ -25,9 +24,10 @@ def test_data_controls_reject_mismatched_user(monkeypatch):
     monkeypatch.setattr(store, "export_user_data", fake_export)
 
     other_user = "00000000-0000-4000-8000-000000000002"
-    response = client.get(f"/users/{DEMO_USER_ID}/export", headers=bearer(other_user))
+    with pytest.raises(HTTPException) as exc:
+        export_user_data(DEMO_USER_ID, authorization=bearer(other_user)["Authorization"])
 
-    assert response.status_code == 403
+    assert exc.value.status_code == 403
 
 
 def test_data_controls_allow_matching_token(monkeypatch):
@@ -37,14 +37,18 @@ def test_data_controls_allow_matching_token(monkeypatch):
 
     monkeypatch.setattr(store, "archive_user_memories", fake_archive)
 
-    response = client.post(f"/memories/archive?user_id={DEMO_USER_ID}", headers=bearer())
+    response = archive_memories(DEMO_USER_ID, authorization=bearer()["Authorization"])
 
-    assert response.status_code == 200
-    assert DataControlResponse(**response.json()).detail == "Archived 2 active memories."
+    assert isinstance(response, DataControlResponse)
+    assert response.detail == "Archived 2 active memories."
 
 
-def test_demo_login_issues_demo_user_token():
-    response = client.post("/auth/login", json={"provider": "google", "identity_token": "demo-token"})
+def test_demo_login_issues_demo_user_token(monkeypatch):
+    async def fake_upsert_user(**kwargs) -> None:
+        return None
 
-    assert response.status_code == 200
-    assert response.json()["user_id"] == DEMO_USER_ID
+    monkeypatch.setattr(store, "upsert_user", fake_upsert_user)
+
+    response = login(AuthRequest(provider=AuthProvider.google, identity_token="demo-token"))
+
+    assert response.user_id == DEMO_USER_ID
