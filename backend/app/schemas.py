@@ -32,6 +32,11 @@ class AuthResponse(BaseModel):
     user_id: str
 
 
+class AuthUser(BaseModel):
+    user_id: str
+    token_type: str = "bearer"
+
+
 class ChatRequest(BaseModel):
     user_id: str
     message: str = Field(min_length=1, max_length=4000)
@@ -113,6 +118,7 @@ class SubscriptionValidationResponse(BaseModel):
     valid: bool
     entitlement: str
     message: str
+    persisted: bool = False
 
 
 class MemoryListResponse(BaseModel):

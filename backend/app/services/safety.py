@@ -28,6 +28,9 @@ HIGH_RISK_TERMS = {
     "she hit me",
     "not safe",
     "weapon",
+    "threatened me",
+    "afraid to go home",
+    "being followed",
 }
 
 MEDIUM_RISK_TERMS = {
@@ -38,6 +41,9 @@ MEDIUM_RISK_TERMS = {
     "rage",
     "out of control",
     "breakdown",
+    "can't calm down",
+    "cannot calm down",
+    "overwhelmed",
 }
 
 

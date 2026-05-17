@@ -4,7 +4,7 @@ ForgeMind is an AI-powered men's mental health mobile app focused on calm, priva
 
 ## Structure
 
-- `backend/` FastAPI API, safety, guidance, memory ranking, auth and subscription stubs, prompts, tests, Alembic migrations
+- `backend/` FastAPI API, safety, guidance, memory ranking, auth/JWT contracts, subscription validation, prompts, tests, Alembic migrations
 - `mobile/` React Native CLI TypeScript scaffold with onboarding-style app screens and bottom navigation
 - `admin/` Next.js TypeScript dashboard scaffold for guidance, users, memories, safety events, prompts, and metrics
 - `infra/` Prometheus and Grafana provisioning
@@ -91,6 +91,7 @@ The mobile UI uses React Navigation bottom tabs and mock preview state for Home,
 
 - `GET /health`
 - `POST /auth/login`
+- `GET /auth/me`
 - `POST /chat`
 - `POST /voice-chat`
 - `POST /safety/classify`
@@ -110,6 +111,12 @@ The MVP follows the required flow:
 5. inject only the top 3-5 memories into prompts
 
 The pure ranking/filtering code is implemented in `backend/app/services/memory.py`; `/chat` now creates embeddings, retrieves pgvector memory candidates, saves chat messages, and extracts durable memories when Postgres is available. If Postgres is unavailable, the demo falls back to in-memory guidance and template responses instead of failing.
+
+## Auth, Safety, and Guidance
+
+`/auth/login` accepts Google or Apple provider tokens and issues ForgeMind JWT sessions. The MVP verifier keeps provider-specific, stable local subjects for development; production credentials still need Google and Apple public-key validation. `/auth/me` verifies bearer tokens and returns the current user id.
+
+The safety gate now stops normal coaching for crisis and high-risk safety messages before prompt generation. Guidance coverage includes burnout, anxiety, anger, breakup, divorce, dating, wedding or fiance stress, loneliness, fatherhood, family conflict, and sleep support.
 
 ## AI and Voice
 

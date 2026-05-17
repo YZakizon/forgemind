@@ -67,7 +67,25 @@ def extract_memory_candidates(message: str) -> list[str]:
     normalized = message.strip()
     if not normalized:
         return []
-    durable_markers = ("every", "always", "usually", "prefer", "goal", "trying to", "work", "sleep")
+    lowered = normalized.lower()
+    if any(term in lowered for term in ("kill myself", "suicide", "self-harm", "hurt myself", "weapon")):
+        return []
+    durable_markers = (
+        "every",
+        "always",
+        "usually",
+        "prefer",
+        "goal",
+        "trying to",
+        "work",
+        "sleep",
+        "relationship",
+        "family",
+        "father",
+        "dad",
+        "lonely",
+        "burned out",
+    )
     if any(marker in normalized.lower() for marker in durable_markers):
         return [normalized[:500]]
     return []

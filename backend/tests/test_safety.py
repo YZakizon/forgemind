@@ -14,6 +14,11 @@ def test_high_risk_language_is_detected():
     assert result.level == SafetyLevel.high
 
 
+def test_overwhelm_is_medium_risk():
+    result = classify_safety("I feel overwhelmed and cannot calm down")
+    assert result.level == SafetyLevel.medium
+
+
 def test_low_risk_message_is_low():
     result = classify_safety("I am stressed about work")
     assert result.level == SafetyLevel.low

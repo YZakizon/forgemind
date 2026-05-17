@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     openai_transcription_model: str = "whisper-1"
     sentry_dsn: str | None = None
     posthog_api_key: str | None = None
+    posthog_host: str = "https://app.posthog.com"
 
     model_config = SettingsConfigDict(
         env_file=(

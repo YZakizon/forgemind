@@ -1,0 +1,53 @@
+import asyncio
+
+from app.services import store
+
+
+class FakeResult:
+    pass
+
+
+class FakeSession:
+    def __init__(self):
+        self.statements: list[str] = []
+        self.committed = False
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return False
+
+    async def execute(self, statement, params):
+        self.statements.append(str(statement))
+        self.params = params
+        return FakeResult()
+
+    async def commit(self):
+        self.committed = True
+
+
+def test_subscription_validation_store_sql_is_complete(monkeypatch):
+    session = FakeSession()
+
+    async def noop_ensure_demo_user(user_id: str) -> None:
+        return None
+
+    monkeypatch.setattr(store, "ensure_demo_user", noop_ensure_demo_user)
+    monkeypatch.setattr(store, "get_sessionmaker", lambda: lambda: session)
+
+    asyncio.run(
+        store.save_subscription_validation(
+            user_id="00000000-0000-4000-8000-000000000001",
+            platform="apple",
+            entitlement="premium",
+            valid=True,
+            store_transaction_id="purchase-token",
+        )
+    )
+
+    statement = session.statements[0]
+    assert "store_transaction_id" in statement
+    assert "VALUES (" in statement
+    assert ":store_transaction_id\n                )" in statement
+    assert session.committed
