@@ -16,6 +16,8 @@ __pycache__/
 .ruff_cache/
 *.log
 *.tsbuildinfo
+docs/UI_CODEX_PROMPT.md
+docs/ui_design.png
 .gradle/
 **/android/.gradle/
 **/android/app/build/
