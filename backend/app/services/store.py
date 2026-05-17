@@ -6,7 +6,17 @@ from uuid import UUID, uuid4
 from sqlalchemy import text
 
 from app.db import get_sessionmaker
-from app.schemas import GuidanceRule, MemoryCandidate, MemoryStatus, SafetyEvent, SafetyLevel
+from app.schemas import (
+    GuidanceRule,
+    MemoryCandidate,
+    MemoryStatus,
+    MoodCheckin,
+    ProgressSummary,
+    ProgressTheme,
+    ResetSession,
+    SafetyEvent,
+    SafetyLevel,
+)
 from app.services.guidance import DEFAULT_GUIDANCE_RULES
 
 
@@ -347,6 +357,134 @@ async def save_subscription_validation(
         await session.commit()
 
 
+async def create_mood_checkin(user_id: str, label: str, intensity: int | None, note: str | None) -> MoodCheckin:
+    await ensure_demo_user(user_id)
+    checkin_id = uuid4()
+    sessionmaker = get_sessionmaker()
+    async with sessionmaker() as session:
+        row = (
+            await session.execute(
+                text(
+                    """
+                    INSERT INTO mood_checkins (id, user_id, label, intensity, note)
+                    VALUES (:id, :user_id, :label, :intensity, :note)
+                    RETURNING id, user_id, label, intensity, note, created_at
+                    """
+                ),
+                {
+                    "id": checkin_id,
+                    "user_id": _uuid(user_id),
+                    "label": label,
+                    "intensity": intensity,
+                    "note": note,
+                },
+            )
+        ).mappings().one()
+        await session.commit()
+    return _mood_checkin_from_row(row)
+
+
+async def create_reset_session(user_id: str, reset_type: str, notes: str | None = None) -> ResetSession:
+    await ensure_demo_user(user_id)
+    reset_id = uuid4()
+    sessionmaker = get_sessionmaker()
+    async with sessionmaker() as session:
+        row = (
+            await session.execute(
+                text(
+                    """
+                    INSERT INTO reset_sessions (id, user_id, reset_type, notes)
+                    VALUES (:id, :user_id, :reset_type, :notes)
+                    RETURNING id, user_id, reset_type, completed, notes, created_at, completed_at
+                    """
+                ),
+                {"id": reset_id, "user_id": _uuid(user_id), "reset_type": reset_type, "notes": notes},
+            )
+        ).mappings().one()
+        await session.commit()
+    return _reset_session_from_row(row)
+
+
+async def complete_reset_session(reset_id: str, user_id: str) -> ResetSession:
+    sessionmaker = get_sessionmaker()
+    async with sessionmaker() as session:
+        row = (
+            await session.execute(
+                text(
+                    """
+                    UPDATE reset_sessions
+                    SET completed = true, completed_at = COALESCE(completed_at, now())
+                    WHERE id = :id AND user_id = :user_id
+                    RETURNING id, user_id, reset_type, completed, notes, created_at, completed_at
+                    """
+                ),
+                {"id": _uuid(reset_id), "user_id": _uuid(user_id)},
+            )
+        ).mappings().one_or_none()
+        await session.commit()
+    if row is None:
+        raise ValueError("reset session not found")
+    return _reset_session_from_row(row)
+
+
+async def get_progress_summary(user_id: str) -> ProgressSummary:
+    await ensure_demo_user(user_id)
+    sessionmaker = get_sessionmaker()
+    async with sessionmaker() as session:
+        counts = (
+            await session.execute(
+                text(
+                    """
+                    SELECT
+                        (SELECT count(*) FROM mood_checkins
+                         WHERE user_id = :user_id AND created_at >= now() - interval '7 days') AS checkins_this_week,
+                        (SELECT count(*) FROM reset_sessions
+                         WHERE user_id = :user_id AND completed = true AND completed_at >= now() - interval '7 days') AS resets_completed_this_week
+                    """
+                ),
+                {"user_id": _uuid(user_id)},
+            )
+        ).mappings().one()
+        checkins = list((
+            await session.execute(
+                text(
+                    """
+                    SELECT id, user_id, label, intensity, note, created_at
+                    FROM mood_checkins
+                    WHERE user_id = :user_id
+                    ORDER BY created_at DESC
+                    LIMIT 8
+                    """
+                ),
+                {"user_id": _uuid(user_id)},
+            )
+        ).mappings())
+        resets = list((
+            await session.execute(
+                text(
+                    """
+                    SELECT id, user_id, reset_type, completed, notes, created_at, completed_at
+                    FROM reset_sessions
+                    WHERE user_id = :user_id
+                    ORDER BY created_at DESC
+                    LIMIT 8
+                    """
+                ),
+                {"user_id": _uuid(user_id)},
+            )
+        ).mappings())
+
+    themes = _progress_themes_from_checkins([_mood_checkin_from_row(row) for row in checkins])
+    return ProgressSummary(
+        user_id=user_id,
+        checkins_this_week=int(counts["checkins_this_week"] or 0),
+        resets_completed_this_week=int(counts["resets_completed_this_week"] or 0),
+        themes=themes,
+        recent_checkins=[_mood_checkin_from_row(row) for row in checkins],
+        recent_resets=[_reset_session_from_row(row) for row in resets],
+    )
+
+
 def _memory_from_row(row) -> MemoryCandidate:
     return MemoryCandidate(
         id=str(row["id"]),
@@ -363,6 +501,44 @@ def _memory_from_row(row) -> MemoryCandidate:
         archived_at=_aware(row["archived_at"]) if row["archived_at"] else None,
         expires_at=_aware(row["expires_at"]) if row["expires_at"] else None,
     )
+
+
+def _mood_checkin_from_row(row) -> MoodCheckin:
+    return MoodCheckin(
+        id=str(row["id"]),
+        user_id=str(row["user_id"]),
+        label=row["label"],
+        intensity=row["intensity"],
+        note=row["note"],
+        created_at=_aware(row["created_at"]),
+    )
+
+
+def _reset_session_from_row(row) -> ResetSession:
+    return ResetSession(
+        id=str(row["id"]),
+        user_id=str(row["user_id"]),
+        reset_type=row["reset_type"],
+        completed=row["completed"],
+        notes=row["notes"],
+        created_at=_aware(row["created_at"]),
+        completed_at=_aware(row["completed_at"]) if row["completed_at"] else None,
+    )
+
+
+def _progress_themes_from_checkins(checkins: list[MoodCheckin]) -> list[ProgressTheme]:
+    if not checkins:
+        return []
+    theme_counts: dict[str, int] = {}
+    for checkin in checkins:
+        theme_counts[checkin.label] = theme_counts.get(checkin.label, 0) + 1
+    total = max(len(checkins), 1)
+    themes = []
+    for label, count in sorted(theme_counts.items(), key=lambda item: item[1], reverse=True)[:5]:
+        value = min(100, max(20, round((count / total) * 100)))
+        tone = "High" if value >= 65 else "Medium" if value >= 40 else "Low"
+        themes.append(ProgressTheme(label=label, value=value, tone=tone))
+    return themes
 
 
 def _aware(value: datetime) -> datetime:

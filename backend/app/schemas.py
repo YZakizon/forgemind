@@ -121,6 +121,53 @@ class SubscriptionValidationResponse(BaseModel):
     persisted: bool = False
 
 
+class MoodCheckinCreate(BaseModel):
+    user_id: str
+    label: str = Field(min_length=1, max_length=80)
+    intensity: int | None = Field(default=None, ge=1, le=10)
+    note: str | None = Field(default=None, max_length=500)
+
+
+class MoodCheckin(BaseModel):
+    id: str
+    user_id: str
+    label: str
+    intensity: int | None = None
+    note: str | None = None
+    created_at: datetime
+
+
+class ResetSessionCreate(BaseModel):
+    user_id: str
+    reset_type: str = Field(min_length=1, max_length=80)
+    notes: str | None = Field(default=None, max_length=500)
+
+
+class ResetSession(BaseModel):
+    id: str
+    user_id: str
+    reset_type: str
+    completed: bool = False
+    notes: str | None = None
+    created_at: datetime
+    completed_at: datetime | None = None
+
+
+class ProgressTheme(BaseModel):
+    label: str
+    value: int
+    tone: str
+
+
+class ProgressSummary(BaseModel):
+    user_id: str
+    checkins_this_week: int = 0
+    resets_completed_this_week: int = 0
+    themes: list[ProgressTheme] = []
+    recent_checkins: list[MoodCheckin] = []
+    recent_resets: list[ResetSession] = []
+
+
 class MemoryListResponse(BaseModel):
     items: list[MemoryCandidate]
 

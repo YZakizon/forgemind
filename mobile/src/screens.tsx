@@ -19,7 +19,15 @@ import {
   VoiceOrb,
   VoiceRecordingState
 } from "./components";
-import { sendChatMessage, sendVoiceMessage } from "./api";
+import {
+  completeResetSession,
+  createMoodCheckin,
+  createResetSession,
+  fetchProgressSummary,
+  sendChatMessage,
+  sendVoiceMessage,
+  type ProgressSummary
+} from "./api";
 import { colors, radii, spacing } from "./design";
 import type { OnboardingPreferences } from "./preferences";
 
@@ -124,6 +132,18 @@ function SelectableGrid({
 }
 
 export function HomeScreen() {
+  const [checkinStatus, setCheckinStatus] = useState<string | null>(null);
+
+  async function submitCheckin(label: string, intensity: number) {
+    setCheckinStatus("Saving check-in...");
+    try {
+      await createMoodCheckin(label, intensity);
+      setCheckinStatus(`${label} check-in saved`);
+    } catch {
+      setCheckinStatus("Check-in could not sync. Try again with the backend running.");
+    }
+  }
+
   return (
     <AppScreen>
       <View style={styles.homeHeader}>
@@ -141,11 +161,12 @@ export function HomeScreen() {
       <View style={styles.sectionGap}>
         <Text style={styles.sectionTitle}>Quick check-in</Text>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.quickRow}>
-          <QuickActionCard title="Angry" icon="anger" color={colors.danger} />
-          <QuickActionCard title="Burned out" icon="burnout" color={colors.warning} />
-          <QuickActionCard title="Lonely" icon="lonely" color={colors.purple} />
-          <QuickActionCard title="Breakup" icon="breakup" color="#EC4899" />
+          <QuickActionCard title="Angry" icon="anger" color={colors.danger} onPress={() => submitCheckin("Angry", 7)} />
+          <QuickActionCard title="Burned out" icon="burnout" color={colors.warning} onPress={() => submitCheckin("Burned out", 8)} />
+          <QuickActionCard title="Lonely" icon="lonely" color={colors.purple} onPress={() => submitCheckin("Lonely", 6)} />
+          <QuickActionCard title="Breakup" icon="breakup" color="#EC4899" onPress={() => submitCheckin("Breakup", 7)} />
         </ScrollView>
+        {checkinStatus ? <Text style={styles.syncStatus}>{checkinStatus}</Text> : null}
       </View>
 
       <View style={styles.twoColumn}>
@@ -376,6 +397,7 @@ function VoiceScreen({
 
 export function ResetScreen() {
   const [filter, setFilter] = useState("All");
+  const [status, setStatus] = useState<string | null>(null);
   const filters = ["All", "Emotions", "Life Events", "Sleep", "Relationships"];
   const tools = [
     { title: "Anger Reset", description: "Release tension and cool down", duration: "3 min", icon: "anger", color: colors.danger },
@@ -387,6 +409,17 @@ export function ResetScreen() {
     { title: "Confidence Boost", description: "Rebuild your inner strength", duration: "", icon: "support", color: colors.success },
     { title: "Family Conflict", description: "Handle tough conversations", duration: "", icon: "relationship", color: "#F59E0B" }
   ] as const;
+
+  async function startReset(title: string) {
+    setStatus(`Starting ${title}...`);
+    try {
+      const session = await createResetSession(title);
+      await completeResetSession(session.id);
+      setStatus(`${title} completed`);
+    } catch {
+      setStatus("Reset could not sync. Try again with the backend running.");
+    }
+  }
 
   return (
     <AppScreen>
@@ -400,14 +433,48 @@ export function ResetScreen() {
       </ScrollView>
       <View style={styles.resetGrid}>
         {tools.map((tool) => (
-          <ResetToolCard key={tool.title} title={tool.title} description={tool.description} duration={tool.duration} icon={tool.icon} color={tool.color} />
+          <ResetToolCard
+            key={tool.title}
+            title={tool.title}
+            description={tool.description}
+            duration={tool.duration}
+            icon={tool.icon}
+            color={tool.color}
+            onPress={() => startReset(tool.title)}
+          />
         ))}
       </View>
+      {status ? <Text style={styles.syncStatus}>{status}</Text> : null}
     </AppScreen>
   );
 }
 
 export function ProgressScreen() {
+  const [summary, setSummary] = useState<ProgressSummary | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    fetchProgressSummary()
+      .then((result) => {
+        if (mounted) setSummary(result);
+      })
+      .catch(() => {
+        if (mounted) setSummary(null);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const themes =
+    summary && summary.themes.length > 0
+      ? summary.themes
+      : [
+          { label: "Work pressure", value: 82, tone: "High" },
+          { label: "Relationship stress", value: 60, tone: "Medium" },
+          { label: "Sleep", value: 60, tone: "Medium" }
+        ];
+
   return (
     <AppScreen>
       <AppHeader title="Progress" rightIcon="info" />
@@ -417,19 +484,33 @@ export function ProgressScreen() {
           <Text style={styles.viewAllText}>View all</Text>
         </View>
         <View style={styles.progressStack}>
-          <ProgressBar label="Work pressure" value={82} tone="High" color={colors.danger} icon="work" iconColor="#EAB308" />
-          <ProgressBar label="Relationship stress" value={60} tone="Medium" color={colors.warning} icon="relationship" />
-          <ProgressBar label="Sleep" value={60} tone="Medium" color={colors.purple} icon="sleep" />
+          {themes.map((theme, index) => (
+            <ProgressBar
+              key={theme.label}
+              label={theme.label}
+              value={theme.value}
+              tone={theme.tone}
+              color={index === 0 ? colors.danger : index === 1 ? colors.warning : colors.purple}
+              icon={theme.label.toLowerCase().includes("sleep") ? "sleep" : theme.label.toLowerCase().includes("relationship") ? "relationship" : "work"}
+              iconColor={index === 0 ? "#EAB308" : undefined}
+            />
+          ))}
         </View>
       </Card>
       <Card>
         <Text style={styles.cardLabel}>Pattern</Text>
-        <Text style={styles.progressCardText}>Sunday nights seem harder for you. You often feel more stressed.</Text>
+        <Text style={styles.progressCardText}>
+          {summary
+            ? `${summary.checkins_this_week} check-ins and ${summary.resets_completed_this_week} completed resets this week.`
+            : "Sunday nights seem harder for you. You often feel more stressed."}
+        </Text>
         <Text style={styles.cardLink}>View pattern →</Text>
       </Card>
       <Card>
         <Text style={styles.cardLabel}>Wins</Text>
-        <Text style={styles.progressCardText}>You paused before reacting 3 times this week.</Text>
+        <Text style={styles.progressCardText}>
+          {summary ? `You completed ${summary.resets_completed_this_week} reset tools this week.` : "You paused before reacting 3 times this week."}
+        </Text>
         <Text style={styles.winText}>Keep it up! 👍</Text>
       </Card>
     </AppScreen>
@@ -652,6 +733,11 @@ const styles = StyleSheet.create({
   },
   errorText: {
     color: colors.danger,
+    fontSize: 13,
+    lineHeight: 18
+  },
+  syncStatus: {
+    color: colors.secondaryText,
     fontSize: 13,
     lineHeight: 18
   },

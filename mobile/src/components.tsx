@@ -207,9 +207,9 @@ export function GradientCard({
   );
 }
 
-export function QuickActionCard({ title, icon, color }: { title: string; icon: IconName; color: string }) {
+export function QuickActionCard({ title, icon, color, onPress }: { title: string; icon: IconName; color: string; onPress?: () => void }) {
   return (
-    <TouchableOpacity style={styles.quickCard} activeOpacity={0.86}>
+    <TouchableOpacity style={styles.quickCard} activeOpacity={0.86} onPress={onPress}>
       <View style={[styles.iconBadge, styles.quickIconBadge, { backgroundColor: `${color}1F` }]}>
         <AppIcon name={icon} color={color} size={20} />
       </View>
@@ -223,16 +223,18 @@ export function ResetToolCard({
   description,
   duration,
   icon,
-  color = colors.accentBright
+  color = colors.accentBright,
+  onPress
 }: {
   title: string;
   description: string;
   duration?: string;
   icon: IconName;
   color?: string;
+  onPress?: () => void;
 }) {
   return (
-    <TouchableOpacity style={styles.resetCard} activeOpacity={0.86}>
+    <TouchableOpacity style={styles.resetCard} activeOpacity={0.86} onPress={onPress}>
       <View style={styles.resetTitleRow}>
         <View style={[styles.iconBadge, styles.resetIconBadge, { backgroundColor: `${color}1F` }]}>
           <AppIcon name={icon} color={color} size={17} />
