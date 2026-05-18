@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://forgemind:forgemind@localhost:5432/forgemind"
     jwt_secret: str = "dev-change-me"
     jwt_algorithm: str = "HS256"
+    google_auth_audience: str | None = None
+    apple_auth_audience: str | None = None
+    apple_auth_issuer: str = "https://appleid.apple.com"
     openai_api_key: str | None = None
     openai_chat_model: str = "gpt-4o-mini"
     openai_embedding_model: str = "text-embedding-3-small"
@@ -21,6 +24,11 @@ class Settings(BaseSettings):
     sentry_dsn: str | None = None
     posthog_api_key: str | None = None
     posthog_host: str = "https://app.posthog.com"
+    storekit_issuer_id: str | None = None
+    storekit_key_id: str | None = None
+    storekit_private_key: str | None = None
+    google_play_package_name: str | None = None
+    google_play_service_account_json: str | None = None
 
     model_config = SettingsConfigDict(
         env_file=(

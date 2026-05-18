@@ -9,12 +9,26 @@ DEMO_USER_ID = "00000000-0000-4000-8000-000000000001"
 
 
 def verify_identity_token(provider: AuthProvider, identity_token: str) -> str:
-    # TODO: Replace this local verifier with Google and Apple public-key validation in production.
     if not identity_token or len(identity_token) < 8:
         raise ValueError("identity token is invalid")
+    settings = get_settings()
+    production = settings.environment.lower() == "production"
     if identity_token == "demo-token":
+        if production:
+            raise ValueError("demo identity token is disabled in production")
         return DEMO_USER_ID
+    if production:
+        _require_provider_config(provider)
+        raise ValueError(f"{provider.value} identity-token verification is not implemented")
     return str(uuid5(NAMESPACE_URL, f"{provider}:{identity_token}"))
+
+
+def _require_provider_config(provider: AuthProvider) -> None:
+    settings = get_settings()
+    if provider == AuthProvider.google and not settings.google_auth_audience:
+        raise ValueError("Google auth audience is not configured")
+    if provider == AuthProvider.apple and not settings.apple_auth_audience:
+        raise ValueError("Apple auth audience is not configured")
 
 
 def issue_access_token(user_id: str) -> str:
