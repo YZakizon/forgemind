@@ -19,7 +19,7 @@ BACKEND_BIND_HOST ?= 0.0.0.0
 ADMIN_HOST ?= $(or $(HOST),$(APP_HOST),$(BACKEND_HOST))
 BACKEND_PORT ?= 8005
 ADMIN_PORT ?= 3005
-API_BASE_URL ?= http://127.0.0.1:$(BACKEND_PORT)
+API_BASE_URL ?= http://$(BACKEND_HOST):$(BACKEND_PORT)
 METRO_HOST ?= 0.0.0.0
 METRO_PORT ?= 8085
 TEST_BACKEND_PORT ?= 28005
@@ -29,7 +29,7 @@ GRADLE_USER_HOME ?= /tmp/forgemind-gradle
 UV_CACHE_DIR ?= /tmp/forgemind-uv-cache
 UV ?= $(if $(wildcard $(BACKEND_DIR)/.venv/bin/uv),.venv/bin/uv,uv)
 
-.PHONY: help setup setup-backend setup-admin setup-mobile infra infra-down migrate backend backend-test-server frontend frontend-test-server admin mobile mobile-test-server android-tunnel android-install test test-backend test-admin test-mobile audit clean
+.PHONY: help setup setup-backend setup-admin setup-mobile infra infra-down migrate backend backend-test-server frontend frontend-test-server admin mobile mobile-test-server android-tunnel android-install android-install-usb test test-backend test-admin test-mobile audit clean
 
 help:
 	@echo "ForgeMind commands"
@@ -43,8 +43,9 @@ help:
 	@echo "  make frontend-test-server Run admin test server on http://$(ADMIN_HOST):$(TEST_ADMIN_PORT)"
 	@echo "  make mobile        Start React Native Metro on http://$(METRO_HOST):$(METRO_PORT)"
 	@echo "  make mobile-test-server Start Metro test server on http://$(METRO_HOST):$(TEST_METRO_PORT)"
-	@echo "  make android-tunnel Forward Android device Metro port over USB"
-	@echo "  make android-install Install the mobile app on a connected Android device"
+	@echo "  make android-tunnel Forward Android device Metro/backend ports over USB"
+	@echo "  make android-install Install the mobile app using the LAN backend URL"
+	@echo "  make android-install-usb Install the mobile app using Android USB reverse"
 	@echo "  make test          Run backend tests and TS checks"
 	@echo "  make audit         Run production dependency audits"
 	@echo "  BACKEND_BIND_HOST=0.0.0.0 controls backend listener"
@@ -97,8 +98,11 @@ android-tunnel:
 	adb reverse tcp:$(METRO_PORT) tcp:$(METRO_PORT)
 	adb reverse tcp:$(BACKEND_PORT) tcp:$(BACKEND_PORT)
 
-android-install: android-tunnel
+android-install:
 	cd $(MOBILE_DIR) && API_BASE_URL=$(API_BASE_URL) GRADLE_USER_HOME=$(GRADLE_USER_HOME) npm run android -- --port $(METRO_PORT) --no-packager
+
+android-install-usb: android-tunnel
+	cd $(MOBILE_DIR) && API_BASE_URL=http://127.0.0.1:$(BACKEND_PORT) GRADLE_USER_HOME=$(GRADLE_USER_HOME) npm run android -- --port $(METRO_PORT) --no-packager
 
 test: test-backend test-admin test-mobile
 

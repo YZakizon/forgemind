@@ -38,6 +38,7 @@ const goalOptions = ["Think clearer", "Feel less overwhelmed", "Handle anger", "
 const stressOptions = ["Work pressure", "Relationship stress", "Loneliness", "Family conflict", "Dating stress", "Burnout"];
 const communicationOptions = ["Direct and practical", "Calm and reflective", "Short and focused"];
 const supportOptions = ["Vent first", "Advice when ready", "Calm me down", "Help me find clarity"];
+const onboardingStepCount = 4;
 
 function toggleSelection(values: string[], value: string) {
   return values.includes(value) ? values.filter((item) => item !== value) : [...values, value];
@@ -49,11 +50,36 @@ export function OnboardingScreen({ onComplete }: { onComplete: (preferences: Onb
   const [communicationPreference, setCommunicationPreference] = useState(communicationOptions[0]);
   const [supportPreference, setSupportPreference] = useState(supportOptions[0]);
   const [saving, setSaving] = useState(false);
+  const [showValidation, setShowValidation] = useState(false);
+  const [step, setStep] = useState(0);
 
   const canContinue = goals.length > 0 && stressCategories.length > 0 && communicationPreference && supportPreference;
+  const lastStep = step === onboardingStepCount - 1;
+  const currentStepValid =
+    (step === 0 && goals.length > 0) ||
+    (step === 1 && stressCategories.length > 0) ||
+    (step === 2 && Boolean(communicationPreference)) ||
+    (step === 3 && Boolean(supportPreference));
+
+  function continueStep() {
+    if (!currentStepValid) {
+      setShowValidation(true);
+      return;
+    }
+    setShowValidation(false);
+    setStep((current) => Math.min(current + 1, onboardingStepCount - 1));
+  }
+
+  function backStep() {
+    setShowValidation(false);
+    setStep((current) => Math.max(current - 1, 0));
+  }
 
   async function submit() {
-    if (!canContinue || saving) return;
+    if (!currentStepValid || !canContinue || saving) {
+      setShowValidation(true);
+      return;
+    }
     setSaving(true);
     await onComplete({ goals, stressCategories, communicationPreference, supportPreference });
   }
@@ -68,38 +94,68 @@ export function OnboardingScreen({ onComplete }: { onComplete: (preferences: Onb
         <Text style={styles.onboardingCopy}>Set the kind of support that feels useful when pressure is high.</Text>
       </View>
 
-      <OnboardingSection title="What do you want help with?">
-        <SelectableGrid options={goalOptions} selected={goals} onToggle={(item) => setGoals((current) => toggleSelection(current, item))} />
-      </OnboardingSection>
+      <Text style={styles.onboardingStepText}>
+        Step {step + 1} of {onboardingStepCount}
+      </Text>
 
-      <OnboardingSection title="What has been taking space lately?">
-        <SelectableGrid
-          options={stressOptions}
-          selected={stressCategories}
-          onToggle={(item) => setStressCategories((current) => toggleSelection(current, item))}
-        />
-      </OnboardingSection>
+      {step === 0 ? (
+        <OnboardingSection title="What do you want help with?" error={showValidation && goals.length === 0 ? "Choose at least one goal." : undefined}>
+          <SelectableGrid options={goalOptions} selected={goals} onToggle={(item) => setGoals((current) => toggleSelection(current, item))} />
+        </OnboardingSection>
+      ) : null}
 
-      <OnboardingSection title="How should Forge talk with you?">
-        <SelectableGrid options={communicationOptions} selected={[communicationPreference]} onToggle={setCommunicationPreference} single />
-      </OnboardingSection>
+      {step === 1 ? (
+        <OnboardingSection
+          title="What has been taking space lately?"
+          error={showValidation && stressCategories.length === 0 ? "Choose at least one stress area." : undefined}
+        >
+          <SelectableGrid
+            options={stressOptions}
+            selected={stressCategories}
+            onToggle={(item) => setStressCategories((current) => toggleSelection(current, item))}
+          />
+        </OnboardingSection>
+      ) : null}
 
-      <OnboardingSection title="What support should come first?">
-        <SelectableGrid options={supportOptions} selected={[supportPreference]} onToggle={setSupportPreference} single />
-      </OnboardingSection>
+      {step === 2 ? (
+        <OnboardingSection title="How should Forge talk with you?" error={showValidation && !communicationPreference ? "Choose a communication style." : undefined}>
+          <SelectableGrid options={communicationOptions} selected={[communicationPreference]} onToggle={setCommunicationPreference} single />
+        </OnboardingSection>
+      ) : null}
 
-      <TouchableOpacity style={[styles.primaryButton, !canContinue && styles.primaryButtonDisabled]} onPress={submit} activeOpacity={0.86}>
-        <Text style={styles.primaryButtonText}>{saving ? "Saving..." : "Start with Forge"}</Text>
-      </TouchableOpacity>
+      {step === 3 ? (
+        <OnboardingSection title="What support should come first?" error={showValidation && !supportPreference ? "Choose a support preference." : undefined}>
+          <SelectableGrid options={supportOptions} selected={[supportPreference]} onToggle={setSupportPreference} single />
+        </OnboardingSection>
+      ) : null}
+
+      <View style={styles.onboardingActions}>
+        <TouchableOpacity
+          style={[styles.secondaryButton, step === 0 && styles.secondaryButtonDisabled]}
+          onPress={backStep}
+          activeOpacity={0.86}
+          disabled={step === 0}
+        >
+          <Text style={[styles.secondaryButtonText, step === 0 && styles.secondaryButtonTextDisabled]}>Back</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.primaryButton, !currentStepValid && styles.primaryButtonDisabled, styles.onboardingActionPrimary]}
+          onPress={lastStep ? submit : continueStep}
+          activeOpacity={0.86}
+        >
+          <Text style={styles.primaryButtonText}>{saving ? "Saving..." : lastStep ? "Start with Forge" : "Continue"}</Text>
+        </TouchableOpacity>
+      </View>
     </AppScreen>
   );
 }
 
-function OnboardingSection({ title, children }: { title: string; children: React.ReactNode }) {
+function OnboardingSection({ title, children, error }: { title: string; children: React.ReactNode; error?: string }) {
   return (
     <Card style={styles.onboardingSection}>
       <Text style={styles.sectionTitle}>{title}</Text>
       {children}
+      {error ? <Text style={styles.validationText}>{error}</Text> : null}
     </Card>
   );
 }
@@ -631,6 +687,12 @@ const styles = StyleSheet.create({
     fontSize: 15,
     lineHeight: 22
   },
+  onboardingStepText: {
+    color: colors.secondaryText,
+    fontSize: 13,
+    fontWeight: "700",
+    textAlign: "center"
+  },
   onboardingSection: {
     gap: spacing.md
   },
@@ -680,6 +742,36 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 16,
     fontWeight: "800"
+  },
+  onboardingActions: {
+    flexDirection: "row",
+    gap: spacing.md,
+    marginTop: spacing.sm
+  },
+  onboardingActionPrimary: {
+    flex: 1,
+    marginTop: 0
+  },
+  secondaryButton: {
+    minHeight: 54,
+    minWidth: 108,
+    borderRadius: radii.pill,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderWidth: 1
+  },
+  secondaryButtonDisabled: {
+    opacity: 0.4
+  },
+  secondaryButtonText: {
+    color: colors.text,
+    fontSize: 16,
+    fontWeight: "800"
+  },
+  secondaryButtonTextDisabled: {
+    color: colors.muted
   },
   homeHeader: {
     flexDirection: "row",
@@ -772,6 +864,12 @@ const styles = StyleSheet.create({
     color: colors.danger,
     fontSize: 13,
     lineHeight: 18
+  },
+  validationText: {
+    color: colors.warning,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: "700"
   },
   syncStatus: {
     color: colors.secondaryText,

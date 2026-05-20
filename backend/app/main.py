@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import tempfile
 from time import perf_counter
 from uuid import uuid4
@@ -38,6 +39,8 @@ from app.services.observability import capture_event, configure_observability
 from app.services import store
 from app.services.safety import classify_safety
 from app.services.subscription import validate_store_purchase
+
+logger = logging.getLogger("forgemind.api")
 
 REQUEST_COUNT = Counter("forgemind_http_requests_total", "HTTP requests", ["method", "path", "status"])
 REQUEST_LATENCY = Histogram("forgemind_http_request_seconds", "HTTP request latency", ["method", "path"])
@@ -89,7 +92,7 @@ def login(payload: AuthRequest) -> AuthResponse:
     try:
         asyncio.run(_persist_user())
     except Exception:
-        pass
+        logger.exception("auth user persistence failed", extra={"user_id": user_id, "provider": payload.provider.value})
     capture_event("auth_login", {"user_id": user_id, "provider": payload.provider.value})
     return AuthResponse(user_id=user_id, access_token=issue_access_token(user_id))
 
@@ -157,6 +160,7 @@ async def _chat_flow(payload: ChatRequest, transcript: str | None = None) -> Cha
             persisted = True
             db_available = True
         except Exception:
+            logger.exception("memory retrieval failed", extra={"user_id": payload.user_id})
             memory_candidates = []
 
     memories = filter_and_rank_memories(memory_candidates)
@@ -169,6 +173,7 @@ async def _chat_flow(payload: ChatRequest, transcript: str | None = None) -> Cha
             db_guidance = await store.fetch_guidance_rules()
             persisted = True
         except Exception:
+            logger.exception("guidance retrieval failed", extra={"user_id": payload.user_id})
             db_guidance = list(guidance_rules.values())
 
     guidance = retrieve_guidance(payload.message, db_guidance)
@@ -205,6 +210,7 @@ async def _chat_flow(payload: ChatRequest, transcript: str | None = None) -> Cha
             },
         )
     except Exception:
+        logger.exception("chat persistence failed", extra={"user_id": payload.user_id})
         persisted = False
 
     return ChatResponse(
@@ -230,6 +236,7 @@ async def _try_store_safety(user_id: str, level: SafetyLevel, reasons: list[str]
         await store.ensure_demo_user(user_id)
         await store.log_safety_event(user_id, level, reasons)
     except Exception:
+        logger.exception("safety event persistence failed", extra={"user_id": user_id, "level": level.value})
         return
 
 
@@ -270,6 +277,7 @@ def list_safety_events() -> SafetyEventListResponse:
         try:
             return SafetyEventListResponse(items=await store.list_safety_events())
         except Exception:
+            logger.exception("list safety events failed")
             return SafetyEventListResponse(items=[])
 
     return asyncio.run(_list())
@@ -310,6 +318,7 @@ def list_memories(user_id: str) -> MemoryListResponse:
         try:
             return MemoryListResponse(items=await store.list_user_memories(user_id))
         except Exception:
+            logger.exception("list memories failed", extra={"user_id": user_id})
             return MemoryListResponse(items=[])
 
     return asyncio.run(_list())
@@ -327,6 +336,7 @@ def archive_memories(user_id: str, authorization: str | None = Header(default=No
         capture_event("memories_archived", {"user_id": user_id, "count": archived})
         return DataControlResponse(user_id=user_id, status="archived", detail=f"Archived {archived} active memories.")
     except Exception as exc:
+        logger.exception("memory archive failed", extra={"user_id": user_id})
         raise HTTPException(status_code=503, detail="Memory archive is unavailable") from exc
 
 
@@ -342,6 +352,7 @@ def export_user_data(user_id: str, authorization: str | None = Header(default=No
         capture_event("user_data_exported", {"user_id": user_id})
         return result
     except Exception as exc:
+        logger.exception("user data export failed", extra={"user_id": user_id})
         raise HTTPException(status_code=503, detail="Data export is unavailable") from exc
 
 
@@ -357,6 +368,7 @@ def delete_user_data(user_id: str, authorization: str | None = Header(default=No
         capture_event("user_data_deleted", {"user_id": user_id})
         return DataControlResponse(user_id=user_id, status="deleted", detail="Deleted stored chat, memory, check-in, reset, subscription, and safety data.")
     except Exception as exc:
+        logger.exception("user data deletion failed", extra={"user_id": user_id})
         raise HTTPException(status_code=503, detail="Data deletion is unavailable") from exc
 
 
@@ -370,6 +382,7 @@ def create_mood_checkin(payload: MoodCheckinCreate) -> MoodCheckin:
         capture_event("mood_checkin_created", {"user_id": payload.user_id, "label": payload.label})
         return result
     except Exception as exc:
+        logger.exception("mood check-in storage failed", extra={"user_id": payload.user_id, "label": payload.label})
         raise HTTPException(status_code=503, detail="Mood check-in storage is unavailable") from exc
 
 
@@ -383,6 +396,7 @@ def create_reset_session(payload: ResetSessionCreate) -> ResetSession:
         capture_event("reset_session_started", {"user_id": payload.user_id, "reset_type": payload.reset_type})
         return result
     except Exception as exc:
+        logger.exception("reset session creation failed", extra={"user_id": payload.user_id, "reset_type": payload.reset_type})
         raise HTTPException(status_code=503, detail="Reset session storage is unavailable") from exc
 
 
@@ -398,6 +412,7 @@ def complete_reset_session(reset_id: str, user_id: str) -> ResetSession:
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
+        logger.exception("reset session completion failed", extra={"user_id": user_id, "reset_id": reset_id})
         raise HTTPException(status_code=503, detail="Reset session storage is unavailable") from exc
 
 
@@ -409,12 +424,13 @@ def progress_summary(user_id: str) -> ProgressSummary:
     try:
         return asyncio.run(_summary())
     except Exception:
+        logger.exception("progress summary failed", extra={"user_id": user_id})
         return ProgressSummary(user_id=user_id)
 
 
 @app.post("/subscriptions/validate", response_model=SubscriptionValidationResponse)
 def validate_subscription(payload: SubscriptionValidationRequest) -> SubscriptionValidationResponse:
-    result = validate_store_purchase(payload.user_id, payload.platform, payload.receipt_or_purchase_token)
+    result = validate_store_purchase(payload.user_id, payload.platform, payload.receipt_or_purchase_token, payload.product_id)
 
     async def _persist() -> bool:
         await store.save_subscription_validation(
@@ -429,6 +445,7 @@ def validate_subscription(payload: SubscriptionValidationRequest) -> Subscriptio
     try:
         result.persisted = asyncio.run(_persist())
     except Exception:
+        logger.exception("subscription validation persistence failed", extra={"user_id": result.user_id, "platform": result.platform})
         result.persisted = False
     capture_event(
         "subscription_validation",

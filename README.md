@@ -26,7 +26,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 For LAN testing with a phone, use your machine's `192.168.0.106` address as the public backend/admin host.
 The backend listener defaults to `0.0.0.0` so both LAN access and Android USB reverse can reach it.
-For a USB-connected Android demo, `make android-tunnel` forwards both Metro `8085` and backend `8005`, and the mobile app calls `http://127.0.0.1:8005`.
+For a USB-connected Android demo, `make android-tunnel` forwards both Metro `8085` and backend `8005`, and `make android-install-usb` builds the mobile app against `http://127.0.0.1:8005`.
 Set `API_BASE_URL` in `mobile/.env.local`, root `.env.local`, or the shell when the mobile app should call a different backend URL. Reinstall the Android app after changing it because the value is compiled into native build config.
 The root `.env` is the highest-priority local development file. Service-local files such as `backend/.env.local`, `admin/.env.local`, and `mobile/.env.local` can exist, but duplicate keys in root `.env` win.
 
@@ -34,11 +34,12 @@ The root `.env` is the highest-priority local development file. Service-local fi
 make backend BACKEND_BIND_HOST=0.0.0.0 BACKEND_HOST=192.168.0.106
 make frontend ADMIN_HOST=192.168.0.106
 make mobile
-make android-install API_BASE_URL=http://192.168.0.106:8005
+make android-install
 ```
 
 Default app ports:
 
+- Postgres host port: `5435`
 - Backend: `8005`
 - Admin: `3005`
 - React Native Metro: `8085`
@@ -84,7 +85,7 @@ npm run start -- --host 0.0.0.0 --port 8085
 npm run android -- --port 8085
 ```
 
-Metro runs on port `8085`. `make android-install` runs the USB tunnel before installing the app.
+Metro runs on port `8085`. Use `make android-install` for LAN installs that keep working after unplugging USB. Use `make android-install-usb` only when you want the app to depend on Android USB reverse.
 The mobile UI uses React Navigation bottom tabs and mock preview state for Home, Talk, Tap-to-Talk Voice, Reset, Progress, Profile, mode selection, and voice-state cards. For LAN testing, rebuild/reinstall the Android app after changing `API_BASE_URL`.
 
 ## API Highlights
@@ -140,7 +141,7 @@ Profile privacy rows call backend data controls. Memory controls archive active 
 ## Credential TODOs
 
 - Set `GOOGLE_AUTH_AUDIENCE` for production Google identity-token verification.
-- Set `APPLE_AUTH_AUDIENCE` and `APPLE_AUTH_ISSUER` for production Apple identity-token verification.
+- Set `APPLE_AUTH_AUDIENCE` and `APPLE_AUTH_ISSUER` for production Apple identity-token verification. `APPLE_AUTH_AUDIENCE` is also used as the StoreKit bundle id.
 - Set `STOREKIT_ISSUER_ID`, `STOREKIT_KEY_ID`, and `STOREKIT_PRIVATE_KEY` before implementing production StoreKit validation.
 - Set `GOOGLE_PLAY_PACKAGE_NAME` and `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON` before implementing production Play Billing validation.
 - Add `OPENAI_API_KEY` for AI responses, embeddings, and voice transcription.

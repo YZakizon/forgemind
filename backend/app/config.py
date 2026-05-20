@@ -11,7 +11,7 @@ PROJECT_ROOT = BACKEND_ROOT.parent
 class Settings(BaseSettings):
     app_name: str = "ForgeMind API"
     environment: str = "development"
-    database_url: str = "postgresql+asyncpg://forgemind:forgemind@localhost:5432/forgemind"
+    database_url: str = "postgresql+asyncpg://forgemind:forgemind@localhost:5435/forgemind"
     jwt_secret: str = "dev-change-me"
     jwt_algorithm: str = "HS256"
     google_auth_audience: str | None = None
@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     storekit_issuer_id: str | None = None
     storekit_key_id: str | None = None
     storekit_private_key: str | None = None
+    storekit_api_base_url: str = "https://api.storekit.itunes.apple.com"
     google_play_package_name: str | None = None
     google_play_service_account_json: str | None = None
 

@@ -110,6 +110,7 @@ class SubscriptionValidationRequest(BaseModel):
     user_id: str
     platform: str
     receipt_or_purchase_token: str
+    product_id: str | None = None
 
 
 class SubscriptionValidationResponse(BaseModel):
