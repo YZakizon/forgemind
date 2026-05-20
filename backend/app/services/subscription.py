@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import base64
 import json
 import time
 from typing import Any
 from urllib import parse, request
 
 import jwt
+from cryptography import x509
 
 from app.config import get_settings
 from app.schemas import SubscriptionValidationResponse
@@ -32,7 +34,7 @@ def validate_store_purchase(
     production = settings.environment.lower() == "production"
     if production:
         missing = _missing_platform_config(normalized)
-        if normalized == "google" and not product_id:
+        if not product_id:
             missing.append("product_id")
         if missing:
             return SubscriptionValidationResponse(
@@ -79,7 +81,7 @@ def _validate_production_purchase(
 ) -> SubscriptionValidationResponse:
     try:
         if platform == "apple":
-            valid = _validate_storekit_transaction(purchase_token)
+            valid = _validate_storekit_transaction(purchase_token, product_id or "")
         else:
             valid = _validate_google_play_subscription(purchase_token, product_id or "")
     except Exception as exc:
@@ -100,7 +102,7 @@ def _validate_production_purchase(
     )
 
 
-def _validate_storekit_transaction(transaction_id: str) -> bool:
+def _validate_storekit_transaction(transaction_id: str, product_id: str) -> bool:
     settings = get_settings()
     bearer = _build_storekit_bearer()
     base_url = settings.storekit_api_base_url.rstrip("/")
@@ -108,7 +110,49 @@ def _validate_storekit_transaction(transaction_id: str) -> bool:
         f"{base_url}/inApps/v1/transactions/{parse.quote(transaction_id)}",
         headers={"Authorization": f"Bearer {bearer}"},
     )
-    return bool(payload.get("signedTransactionInfo") or payload.get("transactionId"))
+    signed_transaction = payload.get("signedTransactionInfo")
+    if not isinstance(signed_transaction, str) or not signed_transaction:
+        return False
+    claims = _decode_storekit_signed_transaction(signed_transaction)
+    return _storekit_claims_are_active(claims, product_id)
+
+
+def _decode_storekit_signed_transaction(signed_transaction: str) -> dict[str, Any]:
+    header = jwt.get_unverified_header(signed_transaction)
+    certificate_chain = header.get("x5c")
+    if not isinstance(certificate_chain, list) or not certificate_chain:
+        raise RuntimeError("StoreKit signed transaction is missing certificate chain")
+    leaf_certificate = x509.load_der_x509_certificate(base64.b64decode(certificate_chain[0]))
+    return jwt.decode(
+        signed_transaction,
+        leaf_certificate.public_key(),
+        options={
+            "verify_aud": False,
+            "verify_exp": False,
+        },
+        algorithms=["ES256"],
+    )
+
+
+def _storekit_claims_are_active(claims: dict[str, Any], product_id: str) -> bool:
+    settings = get_settings()
+    if claims.get("bundleId") != settings.apple_auth_audience:
+        return False
+    if claims.get("productId") != product_id:
+        return False
+    if claims.get("revocationDate"):
+        return False
+    expires_date = _int_or_zero(claims.get("expiresDate"))
+    if expires_date <= int(time.time() * 1000):
+        return False
+    return True
+
+
+def _int_or_zero(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _validate_google_play_subscription(purchase_token: str, product_id: str) -> bool:

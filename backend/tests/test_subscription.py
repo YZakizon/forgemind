@@ -1,3 +1,5 @@
+import time
+
 from app.config import Settings, get_settings
 from app.services.subscription import validate_store_purchase
 
@@ -65,7 +67,7 @@ def test_production_subscription_boundary_fails_closed_when_configured(monkeypat
 
     assert response.valid is False
     assert response.entitlement == "free"
-    assert "purchase validation failed" in response.message
+    assert "product_id" in response.message
 
 
 def test_production_storekit_validation_accepts_transaction(monkeypatch):
@@ -78,15 +80,91 @@ def test_production_storekit_validation_accepts_transaction(monkeypatch):
         storekit_private_key="private",
     )
     monkeypatch.setattr("app.services.subscription._build_storekit_bearer", lambda: "bearer")
+    monkeypatch.setattr("app.services.subscription._decode_storekit_signed_transaction", lambda _: storekit_claims())
     monkeypatch.setattr(
         "app.services.subscription._request_json",
-        lambda *_, **__: {"signedTransactionInfo": "signed"},
+        lambda *_, **__: {"signedTransactionInfo": "signed-transaction"},
     )
 
-    response = validate_store_purchase("user-1", "apple", "transaction-id")
+    response = validate_store_purchase("user-1", "apple", "transaction-id", product_id="premium_monthly")
 
     assert response.valid is True
     assert response.entitlement == "premium"
+
+
+def test_production_storekit_rejects_wrong_product(monkeypatch):
+    override_subscription_settings(
+        monkeypatch,
+        environment="production",
+        apple_auth_audience="com.forgemind.app",
+        storekit_issuer_id="issuer",
+        storekit_key_id="key",
+        storekit_private_key="private",
+    )
+    monkeypatch.setattr("app.services.subscription._build_storekit_bearer", lambda: "bearer")
+    monkeypatch.setattr(
+        "app.services.subscription._decode_storekit_signed_transaction",
+        lambda _: storekit_claims(product_id="other_product"),
+    )
+    monkeypatch.setattr(
+        "app.services.subscription._request_json",
+        lambda *_, **__: {"signedTransactionInfo": "signed-transaction"},
+    )
+
+    response = validate_store_purchase("user-1", "apple", "transaction-id", product_id="premium_monthly")
+
+    assert response.valid is False
+    assert response.entitlement == "free"
+
+
+def test_production_storekit_rejects_expired_transaction(monkeypatch):
+    override_subscription_settings(
+        monkeypatch,
+        environment="production",
+        apple_auth_audience="com.forgemind.app",
+        storekit_issuer_id="issuer",
+        storekit_key_id="key",
+        storekit_private_key="private",
+    )
+    monkeypatch.setattr("app.services.subscription._build_storekit_bearer", lambda: "bearer")
+    monkeypatch.setattr(
+        "app.services.subscription._decode_storekit_signed_transaction",
+        lambda _: storekit_claims(expires_ms=int(time.time() * 1000) - 1000),
+    )
+    monkeypatch.setattr(
+        "app.services.subscription._request_json",
+        lambda *_, **__: {"signedTransactionInfo": "signed-transaction"},
+    )
+
+    response = validate_store_purchase("user-1", "apple", "transaction-id", product_id="premium_monthly")
+
+    assert response.valid is False
+    assert response.entitlement == "free"
+
+
+def test_production_storekit_rejects_revoked_transaction(monkeypatch):
+    override_subscription_settings(
+        monkeypatch,
+        environment="production",
+        apple_auth_audience="com.forgemind.app",
+        storekit_issuer_id="issuer",
+        storekit_key_id="key",
+        storekit_private_key="private",
+    )
+    monkeypatch.setattr("app.services.subscription._build_storekit_bearer", lambda: "bearer")
+    monkeypatch.setattr(
+        "app.services.subscription._decode_storekit_signed_transaction",
+        lambda _: storekit_claims(revocation_ms=int(time.time() * 1000) - 1000),
+    )
+    monkeypatch.setattr(
+        "app.services.subscription._request_json",
+        lambda *_, **__: {"signedTransactionInfo": "signed-transaction"},
+    )
+
+    response = validate_store_purchase("user-1", "apple", "transaction-id", product_id="premium_monthly")
+
+    assert response.valid is False
+    assert response.entitlement == "free"
 
 
 def test_production_google_play_requires_product_id(monkeypatch):
@@ -120,3 +198,19 @@ def test_production_google_play_validation_accepts_active_subscription(monkeypat
 
     assert response.valid is True
     assert response.entitlement == "premium"
+
+
+def storekit_claims(
+    bundle_id: str = "com.forgemind.app",
+    product_id: str = "premium_monthly",
+    expires_ms: int | None = None,
+    revocation_ms: int | None = None,
+) -> dict:
+    payload = {
+        "bundleId": bundle_id,
+        "productId": product_id,
+        "expiresDate": expires_ms if expires_ms is not None else int(time.time() * 1000) + 86_400_000,
+    }
+    if revocation_ms is not None:
+        payload["revocationDate"] = revocation_ms
+    return payload
