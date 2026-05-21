@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     storekit_issuer_id: str | None = None
     storekit_key_id: str | None = None
     storekit_private_key: str | None = None
+    storekit_root_ca_pem: str | None = None
     storekit_api_base_url: str = "https://api.storekit.itunes.apple.com"
     google_play_package_name: str | None = None
     google_play_service_account_json: str | None = None

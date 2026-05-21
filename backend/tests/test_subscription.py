@@ -1,7 +1,14 @@
+from datetime import UTC, datetime, timedelta
 import time
 
+import pytest
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import NameOID
+
 from app.config import Settings, get_settings
-from app.services.subscription import validate_store_purchase
+from app.services.subscription import validate_store_purchase, _verify_storekit_certificate_chain
 
 
 def override_subscription_settings(monkeypatch, **overrides):
@@ -41,6 +48,7 @@ def test_production_storekit_requires_credentials(monkeypatch):
     assert "STOREKIT_ISSUER_ID" in response.message
     assert "STOREKIT_KEY_ID" in response.message
     assert "STOREKIT_PRIVATE_KEY" in response.message
+    assert "STOREKIT_ROOT_CA_PEM" in response.message
 
 
 def test_production_google_play_requires_credentials(monkeypatch):
@@ -61,6 +69,7 @@ def test_production_subscription_boundary_fails_closed_when_configured(monkeypat
         storekit_issuer_id="issuer",
         storekit_key_id="key",
         storekit_private_key="private",
+        storekit_root_ca_pem="root",
     )
 
     response = validate_store_purchase("user-1", "apple", "valid-token")
@@ -78,6 +87,7 @@ def test_production_storekit_validation_accepts_transaction(monkeypatch):
         storekit_issuer_id="issuer",
         storekit_key_id="key",
         storekit_private_key="private",
+        storekit_root_ca_pem="root",
     )
     monkeypatch.setattr("app.services.subscription._build_storekit_bearer", lambda: "bearer")
     monkeypatch.setattr("app.services.subscription._decode_storekit_signed_transaction", lambda _: storekit_claims())
@@ -100,6 +110,7 @@ def test_production_storekit_rejects_wrong_product(monkeypatch):
         storekit_issuer_id="issuer",
         storekit_key_id="key",
         storekit_private_key="private",
+        storekit_root_ca_pem="root",
     )
     monkeypatch.setattr("app.services.subscription._build_storekit_bearer", lambda: "bearer")
     monkeypatch.setattr(
@@ -125,6 +136,7 @@ def test_production_storekit_rejects_expired_transaction(monkeypatch):
         storekit_issuer_id="issuer",
         storekit_key_id="key",
         storekit_private_key="private",
+        storekit_root_ca_pem="root",
     )
     monkeypatch.setattr("app.services.subscription._build_storekit_bearer", lambda: "bearer")
     monkeypatch.setattr(
@@ -150,6 +162,7 @@ def test_production_storekit_rejects_revoked_transaction(monkeypatch):
         storekit_issuer_id="issuer",
         storekit_key_id="key",
         storekit_private_key="private",
+        storekit_root_ca_pem="root",
     )
     monkeypatch.setattr("app.services.subscription._build_storekit_bearer", lambda: "bearer")
     monkeypatch.setattr(
@@ -165,6 +178,20 @@ def test_production_storekit_rejects_revoked_transaction(monkeypatch):
 
     assert response.valid is False
     assert response.entitlement == "free"
+
+
+def test_storekit_certificate_chain_rejects_untrusted_root(monkeypatch):
+    trusted_root, _trusted_key = make_certificate("Trusted Test Root")
+    untrusted_root, untrusted_key = make_certificate("Untrusted Test Root")
+    leaf, _leaf_key = make_certificate("StoreKit Leaf", issuer_cert=untrusted_root, issuer_key=untrusted_key)
+    override_subscription_settings(
+        monkeypatch,
+        environment="production",
+        storekit_root_ca_pem=trusted_root.public_bytes(serialization.Encoding.PEM).decode("utf-8"),
+    )
+
+    with pytest.raises(RuntimeError, match="root is not trusted"):
+        _verify_storekit_certificate_chain([leaf, untrusted_root])
 
 
 def test_production_google_play_requires_product_id(monkeypatch):
@@ -214,3 +241,26 @@ def storekit_claims(
     if revocation_ms is not None:
         payload["revocationDate"] = revocation_ms
     return payload
+
+
+def make_certificate(
+    common_name: str,
+    issuer_cert: x509.Certificate | None = None,
+    issuer_key: rsa.RSAPrivateKey | None = None,
+) -> tuple[x509.Certificate, rsa.RSAPrivateKey]:
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, common_name)])
+    issuer = issuer_cert.subject if issuer_cert else subject
+    signer_key = issuer_key or key
+    now = datetime.now(UTC)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=1))
+        .not_valid_after(now + timedelta(days=1))
+        .sign(signer_key, hashes.SHA256())
+    )
+    return cert, key

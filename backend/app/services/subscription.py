@@ -8,6 +8,8 @@ from urllib import parse, request
 
 import jwt
 from cryptography import x509
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
 
 from app.config import get_settings
 from app.schemas import SubscriptionValidationResponse
@@ -64,6 +66,7 @@ def _missing_platform_config(platform: str) -> list[str]:
             "STOREKIT_ISSUER_ID": settings.storekit_issuer_id,
             "STOREKIT_KEY_ID": settings.storekit_key_id,
             "STOREKIT_PRIVATE_KEY": settings.storekit_private_key,
+            "STOREKIT_ROOT_CA_PEM": settings.storekit_root_ca_pem,
         }
     else:
         required = {
@@ -122,7 +125,9 @@ def _decode_storekit_signed_transaction(signed_transaction: str) -> dict[str, An
     certificate_chain = header.get("x5c")
     if not isinstance(certificate_chain, list) or not certificate_chain:
         raise RuntimeError("StoreKit signed transaction is missing certificate chain")
-    leaf_certificate = x509.load_der_x509_certificate(base64.b64decode(certificate_chain[0]))
+    certificates = [x509.load_der_x509_certificate(base64.b64decode(certificate)) for certificate in certificate_chain]
+    _verify_storekit_certificate_chain(certificates)
+    leaf_certificate = certificates[0]
     return jwt.decode(
         signed_transaction,
         leaf_certificate.public_key(),
@@ -153,6 +158,47 @@ def _int_or_zero(value: Any) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+def _verify_storekit_certificate_chain(certificates: list[x509.Certificate]) -> None:
+    settings = get_settings()
+    if not settings.storekit_root_ca_pem:
+        raise RuntimeError("StoreKit root CA is not configured")
+    if len(certificates) < 2:
+        raise RuntimeError("StoreKit certificate chain is incomplete")
+
+    trusted_root = x509.load_pem_x509_certificate(settings.storekit_root_ca_pem.encode("utf-8"))
+    chain_root = certificates[-1]
+    if chain_root.fingerprint(hashes.SHA256()) != trusted_root.fingerprint(hashes.SHA256()):
+        raise RuntimeError("StoreKit certificate chain root is not trusted")
+
+    now = int(time.time())
+    for certificate in certificates:
+        if int(certificate.not_valid_before_utc.timestamp()) > now or int(certificate.not_valid_after_utc.timestamp()) < now:
+            raise RuntimeError("StoreKit certificate chain is expired or not yet valid")
+
+    for child, issuer in zip(certificates, certificates[1:]):
+        _verify_certificate_signature(child, issuer)
+
+
+def _verify_certificate_signature(child: x509.Certificate, issuer: x509.Certificate) -> None:
+    public_key = issuer.public_key()
+    if isinstance(public_key, rsa.RSAPublicKey):
+        public_key.verify(
+            child.signature,
+            child.tbs_certificate_bytes,
+            padding.PKCS1v15(),
+            child.signature_hash_algorithm,
+        )
+        return
+    if isinstance(public_key, ec.EllipticCurvePublicKey):
+        public_key.verify(
+            child.signature,
+            child.tbs_certificate_bytes,
+            ec.ECDSA(child.signature_hash_algorithm),
+        )
+        return
+    raise RuntimeError("StoreKit certificate chain uses unsupported public key type")
 
 
 def _validate_google_play_subscription(purchase_token: str, product_id: str) -> bool:

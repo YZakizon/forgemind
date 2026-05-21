@@ -142,7 +142,7 @@ Profile privacy rows call backend data controls. Memory controls archive active 
 
 - Set `GOOGLE_AUTH_AUDIENCE` for production Google identity-token verification.
 - Set `APPLE_AUTH_AUDIENCE` and `APPLE_AUTH_ISSUER` for production Apple identity-token verification. `APPLE_AUTH_AUDIENCE` is also used as the StoreKit bundle id.
-- Set `STOREKIT_ISSUER_ID`, `STOREKIT_KEY_ID`, and `STOREKIT_PRIVATE_KEY` before implementing production StoreKit validation.
+- Set `STOREKIT_ISSUER_ID`, `STOREKIT_KEY_ID`, `STOREKIT_PRIVATE_KEY`, and `STOREKIT_ROOT_CA_PEM` before enabling production StoreKit validation.
 - Set `GOOGLE_PLAY_PACKAGE_NAME` and `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON` before implementing production Play Billing validation.
 - Add `OPENAI_API_KEY` for AI responses, embeddings, and voice transcription.
 - Add `SENTRY_DSN` and `POSTHOG_API_KEY` for production observability.
