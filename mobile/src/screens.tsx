@@ -16,8 +16,7 @@ import {
   QuickActionCard,
   ResetToolCard,
   SettingsRow,
-  VoiceOrb,
-  VoiceRecordingState
+  VoiceOrb
 } from "./components";
 import {
   archiveMemories,
@@ -291,7 +290,7 @@ export function TalkScreen() {
           appendVoiceResponse(result.response, result.transcript);
           setListening(false);
         }}
-        onError={() => setError("Forge couldn’t process that recording. Try again when the backend is available.")}
+        onError={(message) => setError(message)}
       />
     );
   }
@@ -368,12 +367,13 @@ function VoiceScreen({
   onModeChange: (mode: Mode) => void;
   onBack: () => void;
   onResponse: (result: Awaited<ReturnType<typeof sendVoiceMessage>>) => void;
-  onError: () => void;
+  onError: (message: string) => void;
 }) {
   const [recording, setRecording] = useState(false);
   const [status, setStatus] = useState("Tap to start");
   const [busy, setBusy] = useState(false);
   const recordingRef = useRef(false);
+  const startedAtRef = useRef<number | null>(null);
 
   useEffect(() => {
     return () => {
@@ -388,6 +388,7 @@ function VoiceScreen({
     if (recordingRef.current && ForgeMindAudioRecorder) {
       await ForgeMindAudioRecorder.cancel();
       recordingRef.current = false;
+      startedAtRef.current = null;
       setRecording(false);
     }
   }
@@ -402,7 +403,13 @@ function VoiceScreen({
   }
 
   async function toggleRecording() {
-    if (busy || !ForgeMindAudioRecorder) return;
+    if (busy) return;
+    if (!ForgeMindAudioRecorder) {
+      const message = "Voice recorder is not available. Reinstall the Android app and try again.";
+      setStatus(message);
+      onError(message);
+      return;
+    }
     try {
       if (!recording) {
         const granted = await ensureRecordPermission();
@@ -412,22 +419,30 @@ function VoiceScreen({
         }
         await ForgeMindAudioRecorder.start();
         recordingRef.current = true;
+        startedAtRef.current = Date.now();
         setRecording(true);
         setStatus("Tap to stop");
         return;
       }
 
+      if (startedAtRef.current && Date.now() - startedAtRef.current < 700) {
+        setStatus("Hold for a moment, then tap to send.");
+        return;
+      }
       setBusy(true);
       setStatus("Sending...");
       const path = await ForgeMindAudioRecorder.stop();
       recordingRef.current = false;
+      startedAtRef.current = null;
       const result = await sendVoiceMessage(path, mode);
       onResponse(result);
-    } catch {
-      onError();
-      setStatus("Tap to try again");
+    } catch (error) {
+      const message = voiceErrorMessage(error);
+      onError(message);
+      setStatus(message);
     } finally {
       recordingRef.current = false;
+      startedAtRef.current = null;
       setRecording(false);
       setBusy(false);
     }
@@ -439,19 +454,33 @@ function VoiceScreen({
         <AppHeader title="Forge" leftIcon="back" rightIcon="sliders" />
       </TouchableOpacity>
 
-      <View style={styles.voiceCenter}>
+      <View style={styles.voiceLayout}>
         <Text style={styles.listeningTitle}>{recording ? "Listening..." : busy ? "Sending..." : "Tap-to-Talk"}</Text>
-        <TouchableOpacity onPress={toggleRecording} activeOpacity={0.86} disabled={busy}>
-          <VoiceOrb active={recording} />
-        </TouchableOpacity>
-        <Text style={styles.tapStop}>{status}</Text>
-        <Text style={styles.voiceInstruction}>Speak naturally. I’m listening.</Text>
+        <View style={styles.voiceBottomControls}>
+          <TouchableOpacity onPress={toggleRecording} activeOpacity={0.86} disabled={busy}>
+            <VoiceOrb active={recording} />
+          </TouchableOpacity>
+          <Text style={styles.tapStop}>{status}</Text>
+          <Text style={styles.voiceInstruction}>Speak naturally. I’m listening.</Text>
+        </View>
       </View>
 
       <ModeSelector value={mode} onChange={onModeChange} compact />
-      <VoiceRecordingState />
     </AppScreen>
   );
+}
+
+function voiceErrorMessage(error: unknown) {
+  if (error instanceof Error && error.message) {
+    if (error.message.includes("Voice transcription needs OPENAI_API_KEY")) {
+      return "Voice needs OPENAI_API_KEY on the backend.";
+    }
+    if (error.message.includes("No speech detected")) {
+      return "No speech detected. Try again closer to the mic.";
+    }
+    return `Voice failed: ${error.message}`;
+  }
+  return "Forge couldn’t process that recording. Try again when the backend is available.";
 }
 
 export function ResetScreen() {
@@ -919,11 +948,16 @@ const styles = StyleSheet.create({
   voiceStates: {
     gap: spacing.md
   },
-  voiceCenter: {
-    minHeight: 340,
+  voiceLayout: {
+    minHeight: 430,
     alignItems: "center",
-    justifyContent: "center",
+    justifyContent: "space-between",
     gap: spacing.md
+  },
+  voiceBottomControls: {
+    alignItems: "center",
+    gap: spacing.md,
+    paddingBottom: spacing.lg
   },
   listeningTitle: {
     color: colors.text,
