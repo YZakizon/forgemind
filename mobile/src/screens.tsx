@@ -25,7 +25,8 @@ import {
   exportUserData,
   fetchProgressSummary,
   sendChatMessage,
-  sendVoiceMessageStream,
+  sendChatMessageStream,
+  transcribeVoiceMessage,
   type ProgressSummary
 } from "./api";
 import { colors, radii, spacing } from "./design";
@@ -36,6 +37,7 @@ const stressOptions = ["Work pressure", "Relationship stress", "Loneliness", "Fa
 const communicationOptions = ["Direct and practical", "Calm and reflective", "Short and focused"];
 const supportOptions = ["Vent first", "Advice when ready", "Calm me down", "Help me find clarity"];
 const onboardingStepCount = 4;
+const maxVoiceRecordingMs = 60_000;
 
 function toggleSelection(values: string[], value: string) {
   return values.includes(value) ? values.filter((item) => item !== value) : [...values, value];
@@ -252,6 +254,7 @@ export function TalkScreen() {
   const recordingRef = useRef(false);
   const startedAtRef = useRef<number | null>(null);
   const stoppingRef = useRef(false);
+  const maxRecordingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [messages, setMessages] = useState<Array<{ id: string; role: "forge" | "user"; text: string }>>([
     { id: "m1", role: "forge", text: "I’m here, Yeffry. What’s on your mind?" },
     { id: "m2", role: "user", text: "I feel so overwhelmed with work and life right now." },
@@ -285,6 +288,9 @@ export function TalkScreen() {
 
   useEffect(() => {
     return () => {
+      if (maxRecordingTimerRef.current) {
+        clearTimeout(maxRecordingTimerRef.current);
+      }
       if (recordingRef.current && ForgeMindAudioRecorder) {
         ForgeMindAudioRecorder.cancel().catch(() => undefined);
       }
@@ -313,7 +319,14 @@ export function TalkScreen() {
       recordingRef.current = true;
       startedAtRef.current = Date.now();
       setVoiceRecording(true);
+      maxRecordingTimerRef.current = setTimeout(() => {
+        stopVoiceMessage().catch(() => undefined);
+      }, maxVoiceRecordingMs);
     } catch (voiceError) {
+      if (maxRecordingTimerRef.current) {
+        clearTimeout(maxRecordingTimerRef.current);
+        maxRecordingTimerRef.current = null;
+      }
       recordingRef.current = false;
       startedAtRef.current = null;
       setVoiceRecording(false);
@@ -323,13 +336,17 @@ export function TalkScreen() {
 
   async function stopVoiceMessage() {
     if (sending || stoppingRef.current || !recordingRef.current || !ForgeMindAudioRecorder) return;
+    if (maxRecordingTimerRef.current) {
+      clearTimeout(maxRecordingTimerRef.current);
+      maxRecordingTimerRef.current = null;
+    }
     const startedAt = startedAtRef.current;
     if (startedAt && Date.now() - startedAt < 700) {
       await ForgeMindAudioRecorder.cancel().catch(() => undefined);
       recordingRef.current = false;
       startedAtRef.current = null;
       setVoiceRecording(false);
-      setError("Hold a little longer, then release.");
+      setError("Record a little longer, then tap stop.");
       return;
     }
     stoppingRef.current = true;
@@ -339,8 +356,9 @@ export function TalkScreen() {
       recordingRef.current = false;
       startedAtRef.current = null;
       setVoiceRecording(false);
-      await sendVoiceMessageStream(path, mode, {
-        onTranscript: appendVoiceTranscript,
+      const transcript = await transcribeVoiceMessage(path);
+      appendVoiceTranscript(transcript);
+      await sendChatMessageStream(transcript, mode, {
         onResponse: (result) => {
           appendForgeResponse(result.response);
           ForgeMindTts?.speak(result.response).catch(() => undefined);

@@ -123,6 +123,22 @@ def chat(payload: ChatRequest) -> ChatResponse:
     return _run_chat(payload)
 
 
+@app.post("/chat/stream")
+async def chat_stream(payload: ChatRequest) -> StreamingResponse:
+    async def events():
+        try:
+            response = await _chat_flow(payload)
+            yield _sse("response", response.model_dump(mode="json"))
+            yield _sse("done", {"ok": True})
+        except HTTPException as exc:
+            yield _sse("error", {"detail": exc.detail, "status_code": exc.status_code})
+        except Exception:
+            logger.exception("chat stream failed", extra={"user_id": payload.user_id})
+            yield _sse("error", {"detail": "Chat failed", "status_code": 500})
+
+    return StreamingResponse(events(), media_type="text/event-stream")
+
+
 async def _chat_flow(payload: ChatRequest, transcript: str | None = None) -> ChatResponse:
     safety = classify_safety(payload.message)
     SAFETY_EVENTS.labels(safety.level.value).inc()
@@ -272,6 +288,12 @@ async def voice_chat(
 ) -> ChatResponse:
     transcript = await _transcribe_uploaded_audio(audio)
     return await _chat_flow(ChatRequest(user_id=user_id, message=transcript, mode=mode), transcript=transcript)
+
+
+@app.post("/voice-transcribe")
+async def voice_transcribe(audio: UploadFile = File(...)) -> dict[str, str]:
+    transcript = await _transcribe_uploaded_audio(audio)
+    return {"transcript": transcript}
 
 
 @app.post("/voice-chat/stream")

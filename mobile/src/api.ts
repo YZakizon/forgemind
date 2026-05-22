@@ -189,23 +189,32 @@ export async function sendVoiceMessage(audioPath: string, mode: Mode): Promise<F
   return response.json();
 }
 
-type VoiceStreamEvent = "transcript" | "response" | "done" | "error";
+type VoiceStreamEvent = "response" | "done" | "error";
 
 type VoiceStreamHandlers = {
-  onTranscript?: (transcript: string) => void;
   onResponse?: (response: ForgeChatResponse) => void;
 };
 
-export async function sendVoiceMessageStream(audioPath: string, mode: Mode, handlers: VoiceStreamHandlers = {}): Promise<ForgeChatResponse> {
+export async function transcribeVoiceMessage(audioPath: string): Promise<string> {
   const form = new FormData();
-  form.append("user_id", DEMO_USER_ID);
-  form.append("mode", mode.toLowerCase());
   form.append("audio", {
     uri: `file://${audioPath}`,
     name: "forgemind-voice.m4a",
     type: "audio/mp4"
   } as unknown as Blob);
 
+  const response = await fetch(`${API_BASE_URL}/voice-transcribe`, {
+    method: "POST",
+    body: form
+  });
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  const result = (await response.json()) as { transcript: string };
+  return result.transcript;
+}
+
+export async function sendChatMessageStream(message: string, mode: Mode, handlers: VoiceStreamHandlers = {}): Promise<ForgeChatResponse> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     let receivedLength = 0;
@@ -218,6 +227,18 @@ export async function sendVoiceMessageStream(audioPath: string, mode: Mode, hand
       settled = true;
       xhr.abort();
       reject(error);
+    }
+
+    async function fallbackToChat() {
+      if (settled) return;
+      settled = true;
+      try {
+        const result = await sendChatMessage(message, mode);
+        handlers.onResponse?.(result);
+        resolve(result);
+      } catch (error) {
+        reject(error instanceof Error ? error : new Error("Chat failed"));
+      }
     }
 
     function handleBlock(block: string) {
@@ -234,11 +255,9 @@ export async function sendVoiceMessageStream(audioPath: string, mode: Mode, hand
       }
 
       if (!dataLines.length) return;
-      const payload = JSON.parse(dataLines.join("\n")) as { transcript?: string; detail?: string } | ForgeChatResponse;
+      const payload = JSON.parse(dataLines.join("\n")) as { detail?: string } | ForgeChatResponse;
 
-      if (event === "transcript" && "transcript" in payload && payload.transcript) {
-        handlers.onTranscript?.(payload.transcript);
-      } else if (event === "response") {
+      if (event === "response") {
         finalResponse = payload as ForgeChatResponse;
         handlers.onResponse?.(finalResponse);
       } else if (event === "error") {
@@ -273,15 +292,16 @@ export async function sendVoiceMessageStream(audioPath: string, mode: Mode, hand
         return;
       }
       if (!finalResponse) {
-        settleError(new Error("Voice chat stream ended without a response."));
+        fallbackToChat();
         return;
       }
       settled = true;
       resolve(finalResponse);
     };
-    xhr.onerror = () => settleError(new Error("Voice chat network error."));
-    xhr.open("POST", `${API_BASE_URL}/voice-chat/stream`);
+    xhr.onerror = fallbackToChat;
+    xhr.open("POST", `${API_BASE_URL}/chat/stream`);
     xhr.setRequestHeader("Accept", "text/event-stream");
-    xhr.send(form);
+    xhr.setRequestHeader("Content-Type", "application/json");
+    xhr.send(JSON.stringify({ user_id: DEMO_USER_ID, message, mode: mode.toLowerCase() }));
   });
 }
