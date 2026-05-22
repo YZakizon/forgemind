@@ -25,9 +25,12 @@ import {
   User,
   UserRound,
   UsersRound,
+  Volume2,
   Zap
 } from "lucide-react-native";
 import {
+  Animated,
+  Easing,
   type ColorValue,
   Modal,
   Pressable,
@@ -59,6 +62,7 @@ export type IconName =
   | "mic"
   | "stop"
   | "send"
+  | "speaker"
   | "anger"
   | "burnout"
   | "lonely"
@@ -89,6 +93,7 @@ const iconComponents: Record<IconName, typeof Home> = {
   mic: Mic,
   stop: Square,
   send: Send,
+  speaker: Volume2,
   anger: Zap,
   burnout: Flame,
   lonely: UserRound,
@@ -293,10 +298,81 @@ export function ProgressBar({
   );
 }
 
-export function ChatBubble({ role, children }: { role: "forge" | "user"; children: React.ReactNode }) {
+function AudioWave({ active }: { active: boolean }) {
+  const pulse = React.useRef(new Animated.Value(0)).current;
+
+  React.useEffect(() => {
+    if (!active) {
+      pulse.stopAnimation();
+      pulse.setValue(0);
+      return;
+    }
+
+    const animation = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, {
+          toValue: 1,
+          duration: 520,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true
+        }),
+        Animated.timing(pulse, {
+          toValue: 0,
+          duration: 520,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true
+        })
+      ])
+    );
+    animation.start();
+    return () => animation.stop();
+  }, [active, pulse]);
+
+  const bars = [0.72, 1, 0.82];
+
   return (
-    <View style={[styles.chatBubble, role === "user" ? styles.userBubble : styles.forgeBubble]}>
-      <Text style={[styles.chatText, role === "user" && styles.userChatText]}>{children}</Text>
+    <View style={styles.audioWave}>
+      {bars.map((baseScale, index) => {
+        const scaleY = active
+          ? pulse.interpolate({
+              inputRange: [0, 0.5, 1],
+              outputRange: [baseScale, 1.55 - index * 0.18, baseScale]
+            })
+          : baseScale;
+        return <Animated.View key={index} style={[styles.audioWaveBar, { transform: [{ scaleY }] }]} />;
+      })}
+    </View>
+  );
+}
+
+export function ChatBubble({
+  role,
+  children,
+  subtitle,
+  speaking = false,
+  onSpeak
+}: {
+  role: "forge" | "user";
+  children: React.ReactNode;
+  subtitle?: string;
+  speaking?: boolean;
+  onSpeak?: () => void;
+}) {
+  const isForge = role === "forge";
+  return (
+    <View style={[styles.chatBubble, isForge ? styles.forgeBubble : styles.userBubble]}>
+      <View style={styles.chatLine}>
+        <Text style={[styles.chatText, role === "user" && styles.userChatText]}>{children}</Text>
+        {isForge && onSpeak ? (
+          <View style={styles.chatAudioControls}>
+            <TouchableOpacity style={styles.speakerButton} onPress={onSpeak} activeOpacity={0.82}>
+              <AppIcon name="speaker" color={speaking ? colors.accentBright : colors.secondaryText} size={16} />
+            </TouchableOpacity>
+            <AudioWave active={speaking} />
+          </View>
+        ) : null}
+      </View>
+      {subtitle ? <Text style={[styles.chatSubtitle, role === "user" && styles.userChatSubtitle]}>{subtitle}</Text> : null}
     </View>
   );
 }
@@ -798,13 +874,59 @@ const styles = StyleSheet.create({
     alignSelf: "flex-end",
     backgroundColor: colors.accent
   },
+  chatLine: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8
+  },
   chatText: {
+    flex: 1,
     color: colors.text,
     fontSize: 14,
     lineHeight: 20
   },
   userChatText: {
     fontWeight: "600"
+  },
+  chatSubtitle: {
+    color: colors.muted,
+    fontSize: 11,
+    lineHeight: 15,
+    marginTop: 5
+  },
+  userChatSubtitle: {
+    color: "rgba(255,255,255,0.72)",
+    textAlign: "right"
+  },
+  chatAudioControls: {
+    minWidth: 52,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    gap: 5,
+    paddingTop: 1
+  },
+  speakerButton: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.secondary
+  },
+  audioWave: {
+    width: 22,
+    height: 18,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 3
+  },
+  audioWaveBar: {
+    width: 3,
+    height: 12,
+    borderRadius: 2,
+    backgroundColor: colors.accentBright
   },
   modeRow: {
     flexDirection: "row",

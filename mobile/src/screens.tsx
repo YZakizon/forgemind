@@ -249,17 +249,56 @@ export function TalkScreen() {
   const [sending, setSending] = useState(false);
   const [voiceRecording, setVoiceRecording] = useState(false);
   const [inputFocused, setInputFocused] = useState(false);
+  const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const navigation = useNavigation();
+  const scrollViewRef = useRef<ScrollView | null>(null);
   const recordingRef = useRef(false);
   const startedAtRef = useRef<number | null>(null);
   const stoppingRef = useRef(false);
   const maxRecordingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const speechTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [messages, setMessages] = useState<Array<{ id: string; role: "forge" | "user"; text: string }>>([
     { id: "m1", role: "forge", text: "I’m here, Yeffry. What’s on your mind?" },
     { id: "m2", role: "user", text: "I feel so overwhelmed with work and life right now." },
     { id: "m3", role: "forge", text: "That’s a lot to carry. Let’s slow it down. What’s been the hardest part today?" }
   ]);
+  const [suggestions, setSuggestions] = useState(["It’s the pressure", "No time for myself", "I don’t know"]);
+
+  function updateSuggestionsFromConversation(text: string) {
+    const normalized = text.toLowerCase();
+    if (normalized.includes("work") || normalized.includes("pressure") || normalized.includes("burnout")) {
+      setSuggestions(["Too much work", "No time to reset", "I feel burned out"]);
+    } else if (normalized.includes("relationship") || normalized.includes("breakup") || normalized.includes("dating")) {
+      setSuggestions(["It still hurts", "I keep replaying it", "I need clarity"]);
+    } else if (normalized.includes("anger") || normalized.includes("react")) {
+      setSuggestions(["I reacted too fast", "I need to cool down", "I feel disrespected"]);
+    } else if (normalized.includes("sleep") || normalized.includes("tired")) {
+      setSuggestions(["I can’t shut off", "My mind keeps racing", "I need rest"]);
+    } else {
+      setSuggestions(mode === "Advice" ? ["What should I do?", "Give me one step", "Help me decide"] : ["Say more", "Help me slow down", "What am I missing?"]);
+    }
+  }
+
+  function scrollChatToBottom(animated = true) {
+    requestAnimationFrame(() => {
+      scrollViewRef.current?.scrollToEnd({ animated });
+    });
+  }
+
+  function speakForgeMessage(messageId: string, text: string) {
+    if (speechTimerRef.current) {
+      clearTimeout(speechTimerRef.current);
+    }
+    setSpeakingMessageId(messageId);
+    ForgeMindTts?.stop?.().catch(() => undefined);
+    ForgeMindTts?.speak(text).catch(() => undefined);
+    const estimatedDuration = Math.min(14_000, Math.max(2_400, text.length * 62));
+    speechTimerRef.current = setTimeout(() => {
+      setSpeakingMessageId(null);
+      speechTimerRef.current = null;
+    }, estimatedDuration);
+  }
 
   async function submitMessage(text = draft) {
     const trimmed = text.trim();
@@ -271,6 +310,7 @@ export function TalkScreen() {
     try {
       const result = await sendChatMessage(trimmed, mode);
       setMessages((current) => [...current, { id: `forge-${Date.now()}`, role: "forge", text: result.response }]);
+      updateSuggestionsFromConversation(result.response);
     } catch {
       setError("Forge couldn’t reach the backend. Check the server and try again.");
     } finally {
@@ -282,12 +322,11 @@ export function TalkScreen() {
     setMessages((current) => [...current, { id: `voice-${Date.now()}`, role: "user", text: transcript }]);
   }
 
-  function appendForgeResponse(text: string) {
-    setMessages((current) => [...current, { id: `forge-${Date.now()}`, role: "forge", text }]);
-  }
-
   useEffect(() => {
     return () => {
+      if (speechTimerRef.current) {
+        clearTimeout(speechTimerRef.current);
+      }
       if (maxRecordingTimerRef.current) {
         clearTimeout(maxRecordingTimerRef.current);
       }
@@ -300,6 +339,10 @@ export function TalkScreen() {
   useEffect(() => {
     navigation.setOptions({ tabBarStyle: inputFocused ? { display: "none" } : undefined });
   }, [inputFocused, navigation]);
+
+  useEffect(() => {
+    scrollChatToBottom();
+  }, [messages.length, sending]);
 
   async function startVoiceMessage() {
     if (sending || recordingRef.current) return;
@@ -360,8 +403,10 @@ export function TalkScreen() {
       appendVoiceTranscript(transcript);
       await sendChatMessageStream(transcript, mode, {
         onResponse: (result) => {
-          appendForgeResponse(result.response);
-          ForgeMindTts?.speak(result.response).catch(() => undefined);
+          const messageId = `forge-${Date.now()}`;
+          setMessages((current) => [...current, { id: messageId, role: "forge", text: result.response }]);
+          updateSuggestionsFromConversation(result.response);
+          speakForgeMessage(messageId, result.response);
         }
       });
     } catch (voiceError) {
@@ -387,23 +432,35 @@ export function TalkScreen() {
     <SafeAreaView style={styles.talkSafeArea}>
       <KeyboardAvoidingView style={styles.talkKeyboard} behavior={Platform.OS === "ios" ? "padding" : undefined}>
         <ScrollView
+          ref={scrollViewRef}
           contentContainerStyle={[styles.talkScroll, inputFocused && styles.talkScrollFocused]}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
+          onContentSizeChange={() => scrollChatToBottom()}
         >
           <AppHeader title="Forge" leftIcon="back" rightIcon="sliders" />
 
           <View style={styles.chatStack}>
             {messages.map((message) => (
-              <ChatBubble key={message.id} role={message.role}>
+              <ChatBubble
+                key={message.id}
+                role={message.role}
+                subtitle={message.role === "forge" ? "Forge" : "You"}
+                speaking={message.id === speakingMessageId}
+                onSpeak={message.role === "forge" ? () => speakForgeMessage(message.id, message.text) : undefined}
+              >
                 {message.text}
               </ChatBubble>
             ))}
-            {sending ? <ChatBubble role="forge">Forge is thinking...</ChatBubble> : null}
+            {sending ? (
+              <ChatBubble role="forge" subtitle="Forge">
+                Forge is thinking...
+              </ChatBubble>
+            ) : null}
           </View>
 
           <View style={styles.suggestionRow}>
-            {["It’s the pressure", "No time for myself", "I don’t know"].map((item) => (
+            {suggestions.map((item) => (
               <TouchableOpacity key={item} style={styles.suggestionChip} onPress={() => submitMessage(item)}>
                 <Text style={styles.suggestionText}>{item}</Text>
               </TouchableOpacity>
