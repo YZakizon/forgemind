@@ -188,3 +188,100 @@ export async function sendVoiceMessage(audioPath: string, mode: Mode): Promise<F
   }
   return response.json();
 }
+
+type VoiceStreamEvent = "transcript" | "response" | "done" | "error";
+
+type VoiceStreamHandlers = {
+  onTranscript?: (transcript: string) => void;
+  onResponse?: (response: ForgeChatResponse) => void;
+};
+
+export async function sendVoiceMessageStream(audioPath: string, mode: Mode, handlers: VoiceStreamHandlers = {}): Promise<ForgeChatResponse> {
+  const form = new FormData();
+  form.append("user_id", DEMO_USER_ID);
+  form.append("mode", mode.toLowerCase());
+  form.append("audio", {
+    uri: `file://${audioPath}`,
+    name: "forgemind-voice.m4a",
+    type: "audio/mp4"
+  } as unknown as Blob);
+
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    let receivedLength = 0;
+    let buffer = "";
+    let settled = false;
+    let finalResponse: ForgeChatResponse | null = null;
+
+    function settleError(error: Error) {
+      if (settled) return;
+      settled = true;
+      xhr.abort();
+      reject(error);
+    }
+
+    function handleBlock(block: string) {
+      const lines = block.split(/\r?\n/);
+      let event: VoiceStreamEvent = "done";
+      const dataLines: string[] = [];
+
+      for (const line of lines) {
+        if (line.startsWith("event:")) {
+          event = line.slice("event:".length).trim() as VoiceStreamEvent;
+        } else if (line.startsWith("data:")) {
+          dataLines.push(line.slice("data:".length).trim());
+        }
+      }
+
+      if (!dataLines.length) return;
+      const payload = JSON.parse(dataLines.join("\n")) as { transcript?: string; detail?: string } | ForgeChatResponse;
+
+      if (event === "transcript" && "transcript" in payload && payload.transcript) {
+        handlers.onTranscript?.(payload.transcript);
+      } else if (event === "response") {
+        finalResponse = payload as ForgeChatResponse;
+        handlers.onResponse?.(finalResponse);
+      } else if (event === "error") {
+        settleError(new Error("detail" in payload && payload.detail ? payload.detail : "Voice chat failed"));
+      }
+    }
+
+    function processChunk(chunk: string) {
+      buffer += chunk;
+      const blocks = buffer.split(/\r?\n\r?\n/);
+      buffer = blocks.pop() ?? "";
+      try {
+        for (const block of blocks) {
+          handleBlock(block);
+        }
+      } catch (error) {
+        settleError(error instanceof Error ? error : new Error("Voice chat stream failed"));
+      }
+    }
+
+    xhr.onreadystatechange = () => {
+      if (xhr.readyState === XMLHttpRequest.LOADING || xhr.readyState === XMLHttpRequest.DONE) {
+        const nextText = xhr.responseText.slice(receivedLength);
+        receivedLength = xhr.responseText.length;
+        if (nextText) processChunk(nextText);
+      }
+
+      if (xhr.readyState !== XMLHttpRequest.DONE || settled) return;
+      if (buffer.trim()) processChunk("\n\n");
+      if (xhr.status < 200 || xhr.status >= 300) {
+        settleError(new Error(xhr.responseText || "Voice chat failed"));
+        return;
+      }
+      if (!finalResponse) {
+        settleError(new Error("Voice chat stream ended without a response."));
+        return;
+      }
+      settled = true;
+      resolve(finalResponse);
+    };
+    xhr.onerror = () => settleError(new Error("Voice chat network error."));
+    xhr.open("POST", `${API_BASE_URL}/voice-chat/stream`);
+    xhr.setRequestHeader("Accept", "text/event-stream");
+    xhr.send(form);
+  });
+}

@@ -25,7 +25,7 @@ import {
   exportUserData,
   fetchProgressSummary,
   sendChatMessage,
-  sendVoiceMessage,
+  sendVoiceMessageStream,
   type ProgressSummary
 } from "./api";
 import { colors, radii, spacing } from "./design";
@@ -251,7 +251,6 @@ export function TalkScreen() {
   const navigation = useNavigation();
   const recordingRef = useRef(false);
   const startedAtRef = useRef<number | null>(null);
-  const pressedRef = useRef(false);
   const stoppingRef = useRef(false);
   const [messages, setMessages] = useState<Array<{ id: string; role: "forge" | "user"; text: string }>>([
     { id: "m1", role: "forge", text: "I’m here, Yeffry. What’s on your mind?" },
@@ -276,10 +275,11 @@ export function TalkScreen() {
     }
   }
 
-  function appendVoiceResponse(text: string, transcript?: string | null) {
-    if (transcript) {
-      setMessages((current) => [...current, { id: `voice-${Date.now()}`, role: "user", text: transcript }]);
-    }
+  function appendVoiceTranscript(transcript: string) {
+    setMessages((current) => [...current, { id: `voice-${Date.now()}`, role: "user", text: transcript }]);
+  }
+
+  function appendForgeResponse(text: string) {
     setMessages((current) => [...current, { id: `forge-${Date.now()}`, role: "forge", text }]);
   }
 
@@ -297,7 +297,6 @@ export function TalkScreen() {
 
   async function startVoiceMessage() {
     if (sending || recordingRef.current) return;
-    pressedRef.current = true;
     setError(null);
     if (!ForgeMindAudioRecorder) {
       setError("Voice recorder is not available. Reinstall the Android app and try again.");
@@ -306,7 +305,6 @@ export function TalkScreen() {
     try {
       const granted = await ensureRecordPermission();
       if (!granted) {
-        pressedRef.current = false;
         setError("Microphone permission is needed.");
         return;
       }
@@ -315,11 +313,7 @@ export function TalkScreen() {
       recordingRef.current = true;
       startedAtRef.current = Date.now();
       setVoiceRecording(true);
-      if (!pressedRef.current) {
-        await stopVoiceMessage();
-      }
     } catch (voiceError) {
-      pressedRef.current = false;
       recordingRef.current = false;
       startedAtRef.current = null;
       setVoiceRecording(false);
@@ -328,7 +322,6 @@ export function TalkScreen() {
   }
 
   async function stopVoiceMessage() {
-    pressedRef.current = false;
     if (sending || stoppingRef.current || !recordingRef.current || !ForgeMindAudioRecorder) return;
     const startedAt = startedAtRef.current;
     if (startedAt && Date.now() - startedAt < 700) {
@@ -345,9 +338,14 @@ export function TalkScreen() {
       const path = await ForgeMindAudioRecorder.stop();
       recordingRef.current = false;
       startedAtRef.current = null;
-      const result = await sendVoiceMessage(path, mode);
-      appendVoiceResponse(result.response, result.transcript);
-      await ForgeMindTts?.speak(result.response).catch(() => undefined);
+      setVoiceRecording(false);
+      await sendVoiceMessageStream(path, mode, {
+        onTranscript: appendVoiceTranscript,
+        onResponse: (result) => {
+          appendForgeResponse(result.response);
+          ForgeMindTts?.speak(result.response).catch(() => undefined);
+        }
+      });
     } catch (voiceError) {
       setError(voiceErrorMessage(voiceError));
     } finally {
@@ -359,9 +357,17 @@ export function TalkScreen() {
     }
   }
 
+  async function toggleVoiceMessage() {
+    if (voiceRecording) {
+      await stopVoiceMessage();
+    } else {
+      await startVoiceMessage();
+    }
+  }
+
   return (
     <SafeAreaView style={styles.talkSafeArea}>
-      <KeyboardAvoidingView style={styles.talkKeyboard} behavior={Platform.OS === "ios" ? "padding" : "height"}>
+      <KeyboardAvoidingView style={styles.talkKeyboard} behavior={Platform.OS === "ios" ? "padding" : undefined}>
         <ScrollView
           contentContainerStyle={[styles.talkScroll, inputFocused && styles.talkScrollFocused]}
           keyboardShouldPersistTaps="handled"
@@ -396,12 +402,11 @@ export function TalkScreen() {
             onSubmit={() => submitMessage()}
             mode={mode}
             onModeChange={setMode}
-            onVoiceStart={startVoiceMessage}
-            onVoiceEnd={stopVoiceMessage}
+            onVoicePress={toggleVoiceMessage}
             onFocusChange={setInputFocused}
             voiceActive={voiceRecording}
             sendDisabled={!draft.trim()}
-            disabled={sending}
+            disabled={sending && !voiceRecording}
           />
         </View>
       </KeyboardAvoidingView>

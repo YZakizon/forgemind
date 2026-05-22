@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import tempfile
 from time import perf_counter
@@ -6,7 +7,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from prometheus_client import Counter, Histogram, generate_latest
-from starlette.responses import Response
+from starlette.responses import Response, StreamingResponse
 
 from app.config import get_public_config
 from app.schemas import (
@@ -240,12 +241,7 @@ async def _try_store_safety(user_id: str, level: SafetyLevel, reasons: list[str]
         return
 
 
-@app.post("/voice-chat", response_model=ChatResponse)
-async def voice_chat(
-    user_id: str = Form(...),
-    mode: str = Form("think_clearly"),
-    audio: UploadFile = File(...),
-) -> ChatResponse:
+async def _transcribe_uploaded_audio(audio: UploadFile) -> str:
     provider = OpenAIProvider()
     if not provider.enabled:
         raise HTTPException(status_code=503, detail="Voice transcription needs OPENAI_API_KEY")
@@ -261,7 +257,43 @@ async def voice_chat(
 
     if not transcript:
         raise HTTPException(status_code=422, detail="No speech detected")
+    return transcript
+
+
+def _sse(event: str, payload: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(payload)}\n\n"
+
+
+@app.post("/voice-chat", response_model=ChatResponse)
+async def voice_chat(
+    user_id: str = Form(...),
+    mode: str = Form("think_clearly"),
+    audio: UploadFile = File(...),
+) -> ChatResponse:
+    transcript = await _transcribe_uploaded_audio(audio)
     return await _chat_flow(ChatRequest(user_id=user_id, message=transcript, mode=mode), transcript=transcript)
+
+
+@app.post("/voice-chat/stream")
+async def voice_chat_stream(
+    user_id: str = Form(...),
+    mode: str = Form("think_clearly"),
+    audio: UploadFile = File(...),
+) -> StreamingResponse:
+    async def events():
+        try:
+            transcript = await _transcribe_uploaded_audio(audio)
+            yield _sse("transcript", {"transcript": transcript})
+            response = await _chat_flow(ChatRequest(user_id=user_id, message=transcript, mode=mode), transcript=transcript)
+            yield _sse("response", response.model_dump(mode="json"))
+            yield _sse("done", {"ok": True})
+        except HTTPException as exc:
+            yield _sse("error", {"detail": exc.detail, "status_code": exc.status_code})
+        except Exception:
+            logger.exception("voice chat stream failed", extra={"user_id": user_id})
+            yield _sse("error", {"detail": "Voice chat failed", "status_code": 500})
+
+    return StreamingResponse(events(), media_type="text/event-stream")
 
 
 @app.post("/safety/classify")

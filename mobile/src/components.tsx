@@ -453,8 +453,7 @@ export function MessageInput({
   onSubmit,
   mode,
   onModeChange,
-  onVoiceStart,
-  onVoiceEnd,
+  onVoicePress,
   onFocusChange,
   voiceActive = false,
   sendDisabled = false,
@@ -465,8 +464,7 @@ export function MessageInput({
   onSubmit: () => void;
   mode: Mode;
   onModeChange: (mode: Mode) => void;
-  onVoiceStart?: () => void;
-  onVoiceEnd?: () => void;
+  onVoicePress?: () => void;
   onFocusChange?: (focused: boolean) => void;
   voiceActive?: boolean;
   sendDisabled?: boolean;
@@ -476,6 +474,7 @@ export function MessageInput({
   const [modeOpen, setModeOpen] = React.useState(false);
   const voiceIconName: IconName = voiceActive ? "stop" : "mic";
   const modes: Mode[] = ["Vent", "Advice", "Calm", "Clarity"];
+  const modeLabel = mode.slice(0, 2);
 
   function setInputFocused(nextFocused: boolean) {
     setFocused(nextFocused);
@@ -503,7 +502,7 @@ export function MessageInput({
       ) : null}
       <View style={styles.inputRow}>
         <TouchableOpacity style={styles.inputModeButton} onPress={() => setModeOpen((open) => !open)} activeOpacity={0.82}>
-          <Text style={styles.inputModeButtonText}>{mode}</Text>
+          <Text style={styles.inputModeButtonText}>{modeLabel}</Text>
         </TouchableOpacity>
         <TextInput
           placeholder="Type a message..."
@@ -518,8 +517,7 @@ export function MessageInput({
         />
         <TouchableOpacity
           style={[styles.micButton, voiceActive && styles.micButtonActive, disabled && styles.micButtonDisabled]}
-          onPressIn={onVoiceStart}
-          onPressOut={onVoiceEnd}
+          onPress={onVoicePress}
           disabled={disabled}
         >
           <AppIcon name={voiceIconName} color={colors.text} size={voiceActive ? 22 : 20} />
