@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { NativeModules, PermissionsAndroid, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { NativeModules, PermissionsAndroid, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, useWindowDimensions, View } from "react-native";
 
 import {
   AppHeader,
@@ -374,6 +374,8 @@ function VoiceScreen({
   const [busy, setBusy] = useState(false);
   const recordingRef = useRef(false);
   const startedAtRef = useRef<number | null>(null);
+  const { height } = useWindowDimensions();
+  const voiceLayoutMinHeight = Math.max(430, height - 250);
 
   useEffect(() => {
     return () => {
@@ -454,7 +456,9 @@ function VoiceScreen({
         <AppHeader title="Forge" leftIcon="back" rightIcon="sliders" />
       </TouchableOpacity>
 
-      <View style={styles.voiceLayout}>
+      <ModeSelector value={mode} onChange={onModeChange} compact />
+
+      <View style={[styles.voiceLayout, { minHeight: voiceLayoutMinHeight }]}>
         <Text style={styles.listeningTitle}>{recording ? "Listening..." : busy ? "Sending..." : "Tap-to-Talk"}</Text>
         <View style={styles.voiceBottomControls}>
           <TouchableOpacity onPress={toggleRecording} activeOpacity={0.86} disabled={busy}>
@@ -464,8 +468,6 @@ function VoiceScreen({
           <Text style={styles.voiceInstruction}>Speak naturally. I’m listening.</Text>
         </View>
       </View>
-
-      <ModeSelector value={mode} onChange={onModeChange} compact />
     </AppScreen>
   );
 }
@@ -949,7 +951,6 @@ const styles = StyleSheet.create({
     gap: spacing.md
   },
   voiceLayout: {
-    minHeight: 430,
     alignItems: "center",
     justifyContent: "space-between",
     gap: spacing.md
@@ -957,7 +958,7 @@ const styles = StyleSheet.create({
   voiceBottomControls: {
     alignItems: "center",
     gap: spacing.md,
-    paddingBottom: spacing.lg
+    paddingBottom: 4
   },
   listeningTitle: {
     color: colors.text,
