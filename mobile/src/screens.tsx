@@ -377,7 +377,7 @@ function VoiceScreen({
   const pressedRef = useRef(false);
   const stoppingRef = useRef(false);
   const { height } = useWindowDimensions();
-  const voiceLayoutMinHeight = Math.max(500, height - 175);
+  const voiceLayoutMinHeight = Math.max(360, Math.min(460, height - 320));
 
   useEffect(() => {
     return () => {
@@ -995,8 +995,8 @@ const styles = StyleSheet.create({
   },
   voiceBottomControls: {
     alignItems: "center",
-    gap: spacing.md,
-    paddingBottom: 4
+    gap: spacing.sm,
+    paddingBottom: 0
   },
   listeningTitle: {
     color: colors.text,
@@ -1006,11 +1006,15 @@ const styles = StyleSheet.create({
   tapStop: {
     color: colors.text,
     fontSize: 14,
-    fontWeight: "700"
+    fontWeight: "700",
+    lineHeight: 18,
+    textAlign: "center"
   },
   voiceInstruction: {
     color: colors.secondaryText,
-    fontSize: 13
+    fontSize: 13,
+    lineHeight: 17,
+    textAlign: "center"
   },
   filterRow: {
     gap: spacing.sm,
