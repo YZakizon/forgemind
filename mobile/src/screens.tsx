@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { NativeModules, PermissionsAndroid, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, useWindowDimensions, View } from "react-native";
+import { BackHandler, NativeModules, PermissionsAndroid, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, useWindowDimensions, View } from "react-native";
 
 import {
   AppHeader,
@@ -374,23 +374,37 @@ function VoiceScreen({
   const [busy, setBusy] = useState(false);
   const recordingRef = useRef(false);
   const startedAtRef = useRef<number | null>(null);
+  const pressedRef = useRef(false);
+  const stoppingRef = useRef(false);
   const { height } = useWindowDimensions();
-  const voiceLayoutMinHeight = Math.max(430, height - 250);
+  const voiceLayoutMinHeight = Math.max(500, height - 175);
 
   useEffect(() => {
     return () => {
       if (recordingRef.current && ForgeMindAudioRecorder) {
         ForgeMindAudioRecorder.cancel().catch(() => undefined);
         recordingRef.current = false;
+        pressedRef.current = false;
+        stoppingRef.current = false;
       }
     };
   }, []);
+
+  useEffect(() => {
+    const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
+      handleBack();
+      return true;
+    });
+    return () => subscription.remove();
+  });
 
   async function cancelRecording() {
     if (recordingRef.current && ForgeMindAudioRecorder) {
       await ForgeMindAudioRecorder.cancel();
       recordingRef.current = false;
       startedAtRef.current = null;
+      pressedRef.current = false;
+      stoppingRef.current = false;
       setRecording(false);
     }
   }
@@ -404,8 +418,9 @@ function VoiceScreen({
     }
   }
 
-  async function toggleRecording() {
-    if (busy) return;
+  async function startRecording() {
+    if (busy || recordingRef.current) return;
+    pressedRef.current = true;
     if (!ForgeMindAudioRecorder) {
       const message = "Voice recorder is not available. Reinstall the Android app and try again.";
       setStatus(message);
@@ -413,24 +428,46 @@ function VoiceScreen({
       return;
     }
     try {
-      if (!recording) {
-        const granted = await ensureRecordPermission();
-        if (!granted) {
-          setStatus("Microphone permission is needed.");
-          return;
-        }
-        await ForgeMindAudioRecorder.start();
-        recordingRef.current = true;
-        startedAtRef.current = Date.now();
-        setRecording(true);
-        setStatus("Tap to stop");
+      const granted = await ensureRecordPermission();
+      if (!granted) {
+        pressedRef.current = false;
+        setStatus("Microphone permission is needed.");
         return;
       }
+      await ForgeMindAudioRecorder.cancel().catch(() => undefined);
+      await ForgeMindAudioRecorder.start();
+      recordingRef.current = true;
+      startedAtRef.current = Date.now();
+      setRecording(true);
+      setStatus("Release to send");
+      if (!pressedRef.current) {
+        await stopRecording();
+      }
+    } catch (error) {
+      pressedRef.current = false;
+      recordingRef.current = false;
+      startedAtRef.current = null;
+      setRecording(false);
+      const message = voiceErrorMessage(error);
+      onError(message);
+      setStatus(message);
+    }
+  }
 
-      if (startedAtRef.current && Date.now() - startedAtRef.current < 700) {
-        setStatus("Hold for a moment, then tap to send.");
-        return;
-      }
+  async function stopRecording() {
+    pressedRef.current = false;
+    if (busy || stoppingRef.current || !recordingRef.current || !ForgeMindAudioRecorder) return;
+    const startedAt = startedAtRef.current;
+    if (startedAt && Date.now() - startedAt < 700) {
+      await ForgeMindAudioRecorder.cancel().catch(() => undefined);
+      recordingRef.current = false;
+      startedAtRef.current = null;
+      setRecording(false);
+      setStatus("Hold a little longer, then release.");
+      return;
+    }
+    stoppingRef.current = true;
+    try {
       setBusy(true);
       setStatus("Sending...");
       const path = await ForgeMindAudioRecorder.stop();
@@ -443,6 +480,7 @@ function VoiceScreen({
       onError(message);
       setStatus(message);
     } finally {
+      stoppingRef.current = false;
       recordingRef.current = false;
       startedAtRef.current = null;
       setRecording(false);
@@ -459,13 +497,13 @@ function VoiceScreen({
       <ModeSelector value={mode} onChange={onModeChange} compact />
 
       <View style={[styles.voiceLayout, { minHeight: voiceLayoutMinHeight }]}>
-        <Text style={styles.listeningTitle}>{recording ? "Listening..." : busy ? "Sending..." : "Tap-to-Talk"}</Text>
+        <Text style={styles.listeningTitle}>{recording ? "Listening..." : busy ? "Sending..." : "Hold to Talk"}</Text>
         <View style={styles.voiceBottomControls}>
-          <TouchableOpacity onPress={toggleRecording} activeOpacity={0.86} disabled={busy}>
+          <TouchableOpacity onPressIn={startRecording} onPressOut={stopRecording} activeOpacity={0.86} disabled={busy}>
             <VoiceOrb active={recording} />
           </TouchableOpacity>
           <Text style={styles.tapStop}>{status}</Text>
-          <Text style={styles.voiceInstruction}>Speak naturally. I’m listening.</Text>
+          <Text style={styles.voiceInstruction}>Hold the mic, speak, then release to send.</Text>
         </View>
       </View>
     </AppScreen>

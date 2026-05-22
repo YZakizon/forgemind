@@ -18,6 +18,7 @@ import {
   Settings,
   Shield,
   SlidersHorizontal,
+  Square,
   Target,
   Trash2,
   TrendingUp,
@@ -56,6 +57,7 @@ export type IconName =
   | "info"
   | "settings"
   | "mic"
+  | "stop"
   | "send"
   | "anger"
   | "burnout"
@@ -85,6 +87,7 @@ const iconComponents: Record<IconName, typeof Home> = {
   info: Info,
   settings: Settings,
   mic: Mic,
+  stop: Square,
   send: Send,
   anger: Zap,
   burnout: Flame,
@@ -361,10 +364,10 @@ export function ModeSelectorSheet({
 export function VoiceOrb({ active = false }: { active?: boolean }) {
   return (
     <View style={styles.orbWrap}>
-      <View style={[styles.ring, styles.ringOuter]} />
-      <View style={[styles.ring, styles.ringMiddle]} />
+      <View style={[styles.ring, styles.ringOuter, active && styles.ringActive]} />
+      <View style={[styles.ring, styles.ringMiddle, active && styles.ringActive]} />
       <View style={[styles.orb, active && styles.orbActive]}>
-        <AppIcon name="mic" color={colors.text} size={34} />
+        <AppIcon name={active ? "stop" : "mic"} color={colors.text} size={active ? 38 : 34} />
       </View>
     </View>
   );
@@ -839,6 +842,11 @@ const styles = StyleSheet.create({
     height: 154,
     borderRadius: 77
   },
+  ringActive: {
+    borderColor: colors.warning,
+    borderWidth: 2,
+    opacity: 0.62
+  },
   orb: {
     width: 96,
     height: 96,
@@ -849,7 +857,7 @@ const styles = StyleSheet.create({
     ...shadow
   },
   orbActive: {
-    backgroundColor: colors.warning
+    backgroundColor: colors.danger
   },
   stateCard: {
     alignItems: "center",
