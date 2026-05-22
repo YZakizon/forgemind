@@ -7,7 +7,7 @@ import com.facebook.react.uimanager.ViewManager
 
 class ForgeMindAudioPackage : ReactPackage {
   override fun createNativeModules(reactContext: ReactApplicationContext): List<NativeModule> {
-    return listOf(ForgeMindAudioModule(reactContext), ForgeMindConfigModule(reactContext))
+    return listOf(ForgeMindAudioModule(reactContext), ForgeMindConfigModule(reactContext), ForgeMindTtsModule(reactContext))
   }
 
   override fun createViewManagers(reactContext: ReactApplicationContext): List<ViewManager<*, *>> {

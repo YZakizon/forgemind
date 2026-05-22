@@ -441,27 +441,80 @@ export function MessageInput({
   value,
   onChangeText,
   onSubmit,
+  mode,
+  onModeChange,
+  onVoiceStart,
+  onVoiceEnd,
+  onFocusChange,
+  voiceActive = false,
   disabled = false
 }: {
   value: string;
   onChangeText: (value: string) => void;
   onSubmit: () => void;
+  mode: Mode;
+  onModeChange: (mode: Mode) => void;
+  onVoiceStart?: () => void;
+  onVoiceEnd?: () => void;
+  onFocusChange?: (focused: boolean) => void;
+  voiceActive?: boolean;
   disabled?: boolean;
 }) {
+  const [focused, setFocused] = React.useState(false);
+  const [modeOpen, setModeOpen] = React.useState(false);
+  const sendMode = focused;
+  const iconName: IconName = sendMode ? "send" : voiceActive ? "stop" : "mic";
+  const modes: Mode[] = ["Vent", "Advice", "Calm", "Clarity"];
+
+  function setInputFocused(nextFocused: boolean) {
+    setFocused(nextFocused);
+    onFocusChange?.(nextFocused);
+  }
+
   return (
     <View style={styles.inputWrap}>
-      <TextInput
-        placeholder="Type a message..."
-        placeholderTextColor={colors.muted}
-        style={styles.input}
-        value={value}
-        onChangeText={onChangeText}
-        editable={!disabled}
-        onSubmitEditing={onSubmit}
-      />
-      <TouchableOpacity style={[styles.micButton, disabled && styles.micButtonDisabled]} onPress={onSubmit} disabled={disabled}>
-        <AppIcon name="send" color={colors.text} size={20} />
-      </TouchableOpacity>
+      {modeOpen ? (
+        <View style={styles.inputModeRow}>
+          {modes.map((item) => (
+            <TouchableOpacity
+              key={item}
+              style={[styles.inputModeChip, item === mode && styles.inputModeChipActive]}
+              onPress={() => {
+                onModeChange(item);
+                setModeOpen(false);
+              }}
+              activeOpacity={0.82}
+            >
+              <Text style={[styles.inputModeText, item === mode && styles.inputModeTextActive]}>{item}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      ) : null}
+      <View style={styles.inputRow}>
+        <TouchableOpacity style={styles.inputModeButton} onPress={() => setModeOpen((open) => !open)} activeOpacity={0.82}>
+          <Text style={styles.inputModeButtonText}>{mode}</Text>
+        </TouchableOpacity>
+        <TextInput
+          placeholder="Type a message..."
+          placeholderTextColor={colors.muted}
+          style={styles.input}
+          value={value}
+          onChangeText={onChangeText}
+          editable={!disabled}
+          onSubmitEditing={onSubmit}
+          onFocus={() => setInputFocused(true)}
+          onBlur={() => setInputFocused(false)}
+        />
+        <TouchableOpacity
+          style={[styles.micButton, voiceActive && styles.micButtonActive, disabled && styles.micButtonDisabled]}
+          onPress={sendMode ? onSubmit : undefined}
+          onPressIn={sendMode ? undefined : onVoiceStart}
+          onPressOut={sendMode ? undefined : onVoiceEnd}
+          disabled={disabled}
+        >
+          <AppIcon name={iconName} color={colors.text} size={voiceActive ? 22 : 20} />
+        </TouchableOpacity>
+      </View>
     </View>
   );
 }
@@ -935,14 +988,56 @@ const styles = StyleSheet.create({
     fontSize: 15
   },
   inputWrap: {
-    flexDirection: "row",
-    alignItems: "center",
     gap: spacing.sm,
     borderRadius: 20,
     backgroundColor: colors.surface,
     borderColor: colors.border,
     borderWidth: 1,
     padding: 6
+  },
+  inputModeRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+    paddingHorizontal: 4,
+    paddingTop: 2
+  },
+  inputModeChip: {
+    minHeight: 32,
+    borderRadius: radii.pill,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 12,
+    backgroundColor: colors.secondary
+  },
+  inputModeChipActive: {
+    backgroundColor: colors.accent
+  },
+  inputModeText: {
+    color: colors.secondaryText,
+    fontSize: 12,
+    fontWeight: "800"
+  },
+  inputModeTextActive: {
+    color: colors.text
+  },
+  inputRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm
+  },
+  inputModeButton: {
+    minHeight: 36,
+    borderRadius: radii.pill,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.secondary,
+    paddingHorizontal: 12
+  },
+  inputModeButtonText: {
+    color: colors.text,
+    fontSize: 12,
+    fontWeight: "800"
   },
   input: {
     flex: 1,
@@ -957,6 +1052,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: colors.accent
+  },
+  micButtonActive: {
+    backgroundColor: colors.danger
   },
   micButtonDisabled: {
     opacity: 0.5

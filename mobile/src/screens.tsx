@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { BackHandler, NativeModules, PermissionsAndroid, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, useWindowDimensions, View } from "react-native";
+import { NativeModules, PermissionsAndroid, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 
 import {
   AppHeader,
@@ -11,12 +11,10 @@ import {
   MessageInput,
   Mode,
   ModeSelector,
-  ModeSelectorSheet,
   ProgressBar,
   QuickActionCard,
   ResetToolCard,
-  SettingsRow,
-  VoiceOrb
+  SettingsRow
 } from "./components";
 import {
   archiveMemories,
@@ -245,11 +243,14 @@ export function HomeScreen() {
 
 export function TalkScreen() {
   const [mode, setMode] = useState<Mode>("Clarity");
-  const [sheetOpen, setSheetOpen] = useState(false);
-  const [listening, setListening] = useState(false);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
+  const [voiceRecording, setVoiceRecording] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const recordingRef = useRef(false);
+  const startedAtRef = useRef<number | null>(null);
+  const pressedRef = useRef(false);
+  const stoppingRef = useRef(false);
   const [messages, setMessages] = useState<Array<{ id: string; role: "forge" | "user"; text: string }>>([
     { id: "m1", role: "forge", text: "I’m here, Yeffry. What’s on your mind?" },
     { id: "m2", role: "user", text: "I feel so overwhelmed with work and life right now." },
@@ -280,19 +281,76 @@ export function TalkScreen() {
     setMessages((current) => [...current, { id: `forge-${Date.now()}`, role: "forge", text }]);
   }
 
-  if (listening) {
-    return (
-      <VoiceScreen
-        mode={mode}
-        onModeChange={setMode}
-        onBack={() => setListening(false)}
-        onResponse={(result) => {
-          appendVoiceResponse(result.response, result.transcript);
-          setListening(false);
-        }}
-        onError={(message) => setError(message)}
-      />
-    );
+  useEffect(() => {
+    return () => {
+      if (recordingRef.current && ForgeMindAudioRecorder) {
+        ForgeMindAudioRecorder.cancel().catch(() => undefined);
+      }
+    };
+  }, []);
+
+  async function startVoiceMessage() {
+    if (sending || recordingRef.current) return;
+    pressedRef.current = true;
+    setError(null);
+    if (!ForgeMindAudioRecorder) {
+      setError("Voice recorder is not available. Reinstall the Android app and try again.");
+      return;
+    }
+    try {
+      const granted = await ensureRecordPermission();
+      if (!granted) {
+        pressedRef.current = false;
+        setError("Microphone permission is needed.");
+        return;
+      }
+      await ForgeMindAudioRecorder.cancel().catch(() => undefined);
+      await ForgeMindAudioRecorder.start();
+      recordingRef.current = true;
+      startedAtRef.current = Date.now();
+      setVoiceRecording(true);
+      if (!pressedRef.current) {
+        await stopVoiceMessage();
+      }
+    } catch (voiceError) {
+      pressedRef.current = false;
+      recordingRef.current = false;
+      startedAtRef.current = null;
+      setVoiceRecording(false);
+      setError(voiceErrorMessage(voiceError));
+    }
+  }
+
+  async function stopVoiceMessage() {
+    pressedRef.current = false;
+    if (sending || stoppingRef.current || !recordingRef.current || !ForgeMindAudioRecorder) return;
+    const startedAt = startedAtRef.current;
+    if (startedAt && Date.now() - startedAt < 700) {
+      await ForgeMindAudioRecorder.cancel().catch(() => undefined);
+      recordingRef.current = false;
+      startedAtRef.current = null;
+      setVoiceRecording(false);
+      setError("Hold a little longer, then release.");
+      return;
+    }
+    stoppingRef.current = true;
+    setSending(true);
+    try {
+      const path = await ForgeMindAudioRecorder.stop();
+      recordingRef.current = false;
+      startedAtRef.current = null;
+      const result = await sendVoiceMessage(path, mode);
+      appendVoiceResponse(result.response, result.transcript);
+      await ForgeMindTts?.speak(result.response).catch(() => undefined);
+    } catch (voiceError) {
+      setError(voiceErrorMessage(voiceError));
+    } finally {
+      stoppingRef.current = false;
+      recordingRef.current = false;
+      startedAtRef.current = null;
+      setVoiceRecording(false);
+      setSending(false);
+    }
   }
 
   return (
@@ -316,28 +374,20 @@ export function TalkScreen() {
         ))}
       </View>
 
-      <MessageInput value={draft} onChangeText={setDraft} onSubmit={() => submitMessage()} disabled={sending} />
-      {error ? <Text style={styles.errorText}>{error}</Text> : null}
-
-      <TouchableOpacity style={styles.voicePreview} onPress={() => setListening(true)} activeOpacity={0.86}>
-        <View>
-          <Text style={styles.voiceTitle}>Tap-to-Talk</Text>
-          <Text style={styles.voiceCopy}>Use voice when typing feels like too much.</Text>
-        </View>
-        <View style={styles.smallMic}>
-          <AppIcon name="mic" color={colors.text} size={18} />
-        </View>
-      </TouchableOpacity>
-
-      <View style={styles.modeHeader}>
-        <Text style={styles.modeLabel}>Mode</Text>
-        <TouchableOpacity onPress={() => setSheetOpen(true)}>
-          <Text style={styles.cardLink}>Change</Text>
-        </TouchableOpacity>
+      <View style={styles.chatInputDock}>
+        <MessageInput
+          value={draft}
+          onChangeText={setDraft}
+          onSubmit={() => submitMessage()}
+          mode={mode}
+          onModeChange={setMode}
+          onVoiceStart={startVoiceMessage}
+          onVoiceEnd={stopVoiceMessage}
+          voiceActive={voiceRecording}
+          disabled={sending}
+        />
       </View>
-      <ModeSelector value={mode} onChange={setMode} />
-
-      <ModeSelectorSheet visible={sheetOpen} selected={mode} onSelect={setMode} onClose={() => setSheetOpen(false)} />
+      {error ? <Text style={styles.errorText}>{error}</Text> : null}
     </AppScreen>
   );
 }
@@ -349,165 +399,17 @@ const { ForgeMindAudioRecorder } = NativeModules as {
     cancel: () => Promise<void>;
   };
 };
+const { ForgeMindTts } = NativeModules as {
+  ForgeMindTts?: {
+    speak: (text: string) => Promise<void>;
+    stop: () => Promise<void>;
+  };
+};
 
 async function ensureRecordPermission() {
   if (Platform.OS !== "android") return true;
   const result = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.RECORD_AUDIO);
   return result === PermissionsAndroid.RESULTS.GRANTED;
-}
-
-function VoiceScreen({
-  mode,
-  onModeChange,
-  onBack,
-  onResponse,
-  onError
-}: {
-  mode: Mode;
-  onModeChange: (mode: Mode) => void;
-  onBack: () => void;
-  onResponse: (result: Awaited<ReturnType<typeof sendVoiceMessage>>) => void;
-  onError: (message: string) => void;
-}) {
-  const [recording, setRecording] = useState(false);
-  const [status, setStatus] = useState("Tap to start");
-  const [busy, setBusy] = useState(false);
-  const recordingRef = useRef(false);
-  const startedAtRef = useRef<number | null>(null);
-  const pressedRef = useRef(false);
-  const stoppingRef = useRef(false);
-  const { height } = useWindowDimensions();
-  const voiceLayoutMinHeight = Math.max(360, Math.min(460, height - 320));
-
-  useEffect(() => {
-    return () => {
-      if (recordingRef.current && ForgeMindAudioRecorder) {
-        ForgeMindAudioRecorder.cancel().catch(() => undefined);
-        recordingRef.current = false;
-        pressedRef.current = false;
-        stoppingRef.current = false;
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
-      handleBack();
-      return true;
-    });
-    return () => subscription.remove();
-  });
-
-  async function cancelRecording() {
-    if (recordingRef.current && ForgeMindAudioRecorder) {
-      await ForgeMindAudioRecorder.cancel();
-      recordingRef.current = false;
-      startedAtRef.current = null;
-      pressedRef.current = false;
-      stoppingRef.current = false;
-      setRecording(false);
-    }
-  }
-
-  async function handleBack() {
-    if (busy) return;
-    try {
-      await cancelRecording();
-    } finally {
-      onBack();
-    }
-  }
-
-  async function startRecording() {
-    if (busy || recordingRef.current) return;
-    pressedRef.current = true;
-    if (!ForgeMindAudioRecorder) {
-      const message = "Voice recorder is not available. Reinstall the Android app and try again.";
-      setStatus(message);
-      onError(message);
-      return;
-    }
-    try {
-      const granted = await ensureRecordPermission();
-      if (!granted) {
-        pressedRef.current = false;
-        setStatus("Microphone permission is needed.");
-        return;
-      }
-      await ForgeMindAudioRecorder.cancel().catch(() => undefined);
-      await ForgeMindAudioRecorder.start();
-      recordingRef.current = true;
-      startedAtRef.current = Date.now();
-      setRecording(true);
-      setStatus("Release to send");
-      if (!pressedRef.current) {
-        await stopRecording();
-      }
-    } catch (error) {
-      pressedRef.current = false;
-      recordingRef.current = false;
-      startedAtRef.current = null;
-      setRecording(false);
-      const message = voiceErrorMessage(error);
-      onError(message);
-      setStatus(message);
-    }
-  }
-
-  async function stopRecording() {
-    pressedRef.current = false;
-    if (busy || stoppingRef.current || !recordingRef.current || !ForgeMindAudioRecorder) return;
-    const startedAt = startedAtRef.current;
-    if (startedAt && Date.now() - startedAt < 700) {
-      await ForgeMindAudioRecorder.cancel().catch(() => undefined);
-      recordingRef.current = false;
-      startedAtRef.current = null;
-      setRecording(false);
-      setStatus("Hold a little longer, then release.");
-      return;
-    }
-    stoppingRef.current = true;
-    try {
-      setBusy(true);
-      setStatus("Sending...");
-      const path = await ForgeMindAudioRecorder.stop();
-      recordingRef.current = false;
-      startedAtRef.current = null;
-      const result = await sendVoiceMessage(path, mode);
-      onResponse(result);
-    } catch (error) {
-      const message = voiceErrorMessage(error);
-      onError(message);
-      setStatus(message);
-    } finally {
-      stoppingRef.current = false;
-      recordingRef.current = false;
-      startedAtRef.current = null;
-      setRecording(false);
-      setBusy(false);
-    }
-  }
-
-  return (
-    <AppScreen>
-      <TouchableOpacity onPress={handleBack}>
-        <AppHeader title="Forge" leftIcon="back" rightIcon="sliders" />
-      </TouchableOpacity>
-
-      <ModeSelector value={mode} onChange={onModeChange} compact />
-
-      <View style={[styles.voiceLayout, { minHeight: voiceLayoutMinHeight }]}>
-        <Text style={styles.listeningTitle}>{recording ? "Listening..." : busy ? "Sending..." : "Hold to Talk"}</Text>
-        <View style={styles.voiceBottomControls}>
-          <TouchableOpacity onPressIn={startRecording} onPressOut={stopRecording} activeOpacity={0.86} disabled={busy}>
-            <VoiceOrb active={recording} />
-          </TouchableOpacity>
-          <Text style={styles.tapStop}>{status}</Text>
-          <Text style={styles.voiceInstruction}>Hold the mic, speak, then release to send.</Text>
-        </View>
-      </View>
-    </AppScreen>
-  );
 }
 
 function voiceErrorMessage(error: unknown) {
@@ -929,6 +831,9 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: "700"
   },
+  chatInputDock: {
+    gap: spacing.sm
+  },
   errorText: {
     color: colors.danger,
     fontSize: 13,
@@ -945,76 +850,8 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 18
   },
-  modeHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between"
-  },
-  modeLabel: {
-    color: colors.text,
-    fontSize: 15,
-    fontWeight: "700"
-  },
-  voicePreview: {
-    minHeight: 66,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    borderRadius: 16,
-    backgroundColor: colors.elevated,
-    borderColor: colors.border,
-    borderWidth: 1,
-    padding: 14
-  },
-  voiceTitle: {
-    color: colors.text,
-    fontSize: 15,
-    fontWeight: "700"
-  },
-  voiceCopy: {
-    color: colors.secondaryText,
-    fontSize: 13,
-    lineHeight: 18,
-    marginTop: 5
-  },
-  smallMic: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: colors.warning
-  },
   voiceStates: {
     gap: spacing.md
-  },
-  voiceLayout: {
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: spacing.md
-  },
-  voiceBottomControls: {
-    alignItems: "center",
-    gap: spacing.sm,
-    paddingBottom: 0
-  },
-  listeningTitle: {
-    color: colors.text,
-    fontSize: 24,
-    fontWeight: "700"
-  },
-  tapStop: {
-    color: colors.text,
-    fontSize: 14,
-    fontWeight: "700",
-    lineHeight: 18,
-    textAlign: "center"
-  },
-  voiceInstruction: {
-    color: colors.secondaryText,
-    fontSize: 13,
-    lineHeight: 17,
-    textAlign: "center"
   },
   filterRow: {
     gap: spacing.sm,
