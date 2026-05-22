@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
-import { NativeModules, PermissionsAndroid, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { KeyboardAvoidingView, NativeModules, PermissionsAndroid, Platform, SafeAreaView, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { useNavigation } from "@react-navigation/native";
 
 import {
   AppHeader,
@@ -10,7 +11,6 @@ import {
   GradientCard,
   MessageInput,
   Mode,
-  ModeSelector,
   ProgressBar,
   QuickActionCard,
   ResetToolCard,
@@ -246,7 +246,9 @@ export function TalkScreen() {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [voiceRecording, setVoiceRecording] = useState(false);
+  const [inputFocused, setInputFocused] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const navigation = useNavigation();
   const recordingRef = useRef(false);
   const startedAtRef = useRef<number | null>(null);
   const pressedRef = useRef(false);
@@ -288,6 +290,10 @@ export function TalkScreen() {
       }
     };
   }, []);
+
+  useEffect(() => {
+    navigation.setOptions({ tabBarStyle: inputFocused ? { display: "none" } : undefined });
+  }, [inputFocused, navigation]);
 
   async function startVoiceMessage() {
     if (sending || recordingRef.current) return;
@@ -354,41 +360,52 @@ export function TalkScreen() {
   }
 
   return (
-    <AppScreen>
-      <AppHeader title="Forge" leftIcon="back" rightIcon="sliders" />
+    <SafeAreaView style={styles.talkSafeArea}>
+      <KeyboardAvoidingView style={styles.talkKeyboard} behavior={Platform.OS === "ios" ? "padding" : "height"}>
+        <ScrollView
+          contentContainerStyle={[styles.talkScroll, inputFocused && styles.talkScrollFocused]}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          <AppHeader title="Forge" leftIcon="back" rightIcon="sliders" />
 
-      <View style={styles.chatStack}>
-        {messages.map((message) => (
-          <ChatBubble key={message.id} role={message.role}>
-            {message.text}
-          </ChatBubble>
-        ))}
-        {sending ? <ChatBubble role="forge">Forge is thinking...</ChatBubble> : null}
-      </View>
+          <View style={styles.chatStack}>
+            {messages.map((message) => (
+              <ChatBubble key={message.id} role={message.role}>
+                {message.text}
+              </ChatBubble>
+            ))}
+            {sending ? <ChatBubble role="forge">Forge is thinking...</ChatBubble> : null}
+          </View>
 
-      <View style={styles.suggestionRow}>
-        {["It’s the pressure", "No time for myself", "I don’t know"].map((item) => (
-          <TouchableOpacity key={item} style={styles.suggestionChip} onPress={() => submitMessage(item)}>
-            <Text style={styles.suggestionText}>{item}</Text>
-          </TouchableOpacity>
-        ))}
-      </View>
+          <View style={styles.suggestionRow}>
+            {["It’s the pressure", "No time for myself", "I don’t know"].map((item) => (
+              <TouchableOpacity key={item} style={styles.suggestionChip} onPress={() => submitMessage(item)}>
+                <Text style={styles.suggestionText}>{item}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
 
-      <View style={styles.chatInputDock}>
-        <MessageInput
-          value={draft}
-          onChangeText={setDraft}
-          onSubmit={() => submitMessage()}
-          mode={mode}
-          onModeChange={setMode}
-          onVoiceStart={startVoiceMessage}
-          onVoiceEnd={stopVoiceMessage}
-          voiceActive={voiceRecording}
-          disabled={sending}
-        />
-      </View>
-      {error ? <Text style={styles.errorText}>{error}</Text> : null}
-    </AppScreen>
+          {error ? <Text style={styles.errorText}>{error}</Text> : null}
+        </ScrollView>
+
+        <View style={[styles.chatInputDock, inputFocused && styles.chatInputDockFocused]}>
+          <MessageInput
+            value={draft}
+            onChangeText={setDraft}
+            onSubmit={() => submitMessage()}
+            mode={mode}
+            onModeChange={setMode}
+            onVoiceStart={startVoiceMessage}
+            onVoiceEnd={stopVoiceMessage}
+            onFocusChange={setInputFocused}
+            voiceActive={voiceRecording}
+            sendDisabled={!draft.trim()}
+            disabled={sending}
+          />
+        </View>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 }
 
@@ -744,6 +761,23 @@ const styles = StyleSheet.create({
   secondaryButtonTextDisabled: {
     color: colors.muted
   },
+  talkSafeArea: {
+    flex: 1,
+    backgroundColor: colors.background
+  },
+  talkKeyboard: {
+    flex: 1
+  },
+  talkScroll: {
+    flexGrow: 1,
+    paddingHorizontal: spacing.md,
+    paddingTop: spacing.xs,
+    paddingBottom: spacing.md,
+    gap: 16
+  },
+  talkScrollFocused: {
+    paddingBottom: spacing.sm
+  },
   homeHeader: {
     flexDirection: "row",
     alignItems: "flex-start",
@@ -811,7 +845,9 @@ const styles = StyleSheet.create({
     marginTop: spacing.md
   },
   chatStack: {
-    gap: spacing.md
+    flexGrow: 1,
+    gap: spacing.md,
+    justifyContent: "flex-end"
   },
   suggestionRow: {
     flexDirection: "row",
@@ -832,7 +868,13 @@ const styles = StyleSheet.create({
     fontWeight: "700"
   },
   chatInputDock: {
-    gap: spacing.sm
+    paddingHorizontal: spacing.md,
+    paddingTop: spacing.sm,
+    paddingBottom: 92,
+    backgroundColor: colors.background
+  },
+  chatInputDockFocused: {
+    paddingBottom: spacing.sm
   },
   errorText: {
     color: colors.danger,

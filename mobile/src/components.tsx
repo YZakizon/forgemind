@@ -120,6 +120,16 @@ export function AppIcon({ name, color = colors.secondaryText, size = 20 }: { nam
 }
 
 export function BottomTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
+  const focusedDescriptor = descriptors[state.routes[state.index].key];
+  const tabBarStyle = focusedDescriptor.options.tabBarStyle;
+  const shouldHideTabBar = Array.isArray(tabBarStyle)
+    ? tabBarStyle.some((style) => Boolean(style && typeof style === "object" && "display" in style && style.display === "none"))
+    : Boolean(tabBarStyle && typeof tabBarStyle === "object" && "display" in tabBarStyle && tabBarStyle.display === "none");
+
+  if (shouldHideTabBar) {
+    return null;
+  }
+
   return (
     <View style={styles.bottomBar}>
       {state.routes.map((route, index) => {
@@ -447,6 +457,7 @@ export function MessageInput({
   onVoiceEnd,
   onFocusChange,
   voiceActive = false,
+  sendDisabled = false,
   disabled = false
 }: {
   value: string;
@@ -458,12 +469,12 @@ export function MessageInput({
   onVoiceEnd?: () => void;
   onFocusChange?: (focused: boolean) => void;
   voiceActive?: boolean;
+  sendDisabled?: boolean;
   disabled?: boolean;
 }) {
   const [focused, setFocused] = React.useState(false);
   const [modeOpen, setModeOpen] = React.useState(false);
-  const sendMode = focused;
-  const iconName: IconName = sendMode ? "send" : voiceActive ? "stop" : "mic";
+  const voiceIconName: IconName = voiceActive ? "stop" : "mic";
   const modes: Mode[] = ["Vent", "Advice", "Calm", "Clarity"];
 
   function setInputFocused(nextFocused: boolean) {
@@ -507,12 +518,18 @@ export function MessageInput({
         />
         <TouchableOpacity
           style={[styles.micButton, voiceActive && styles.micButtonActive, disabled && styles.micButtonDisabled]}
-          onPress={sendMode ? onSubmit : undefined}
-          onPressIn={sendMode ? undefined : onVoiceStart}
-          onPressOut={sendMode ? undefined : onVoiceEnd}
+          onPressIn={onVoiceStart}
+          onPressOut={onVoiceEnd}
           disabled={disabled}
         >
-          <AppIcon name={iconName} color={colors.text} size={voiceActive ? 22 : 20} />
+          <AppIcon name={voiceIconName} color={colors.text} size={voiceActive ? 22 : 20} />
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.sendButton, (disabled || sendDisabled) && styles.micButtonDisabled]}
+          onPress={onSubmit}
+          disabled={disabled || sendDisabled}
+        >
+          <AppIcon name="send" color={colors.text} size={20} />
         </TouchableOpacity>
       </View>
     </View>
@@ -1046,15 +1063,23 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md
   },
   micButton: {
+    width: 40,
+    height: 42,
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.secondary
+  },
+  micButtonActive: {
+    backgroundColor: colors.danger
+  },
+  sendButton: {
     width: 42,
     height: 42,
     borderRadius: 21,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: colors.accent
-  },
-  micButtonActive: {
-    backgroundColor: colors.danger
   },
   micButtonDisabled: {
     opacity: 0.5
