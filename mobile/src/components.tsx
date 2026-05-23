@@ -179,21 +179,49 @@ export function AppHeader({
   title,
   subtitle,
   leftIcon,
-  rightIcon
+  rightIcon,
+  onLeftPress,
+  onRightPress
 }: {
   title: string;
   subtitle?: string;
   leftIcon?: IconName;
   rightIcon?: IconName;
+  onLeftPress?: () => void;
+  onRightPress?: () => void;
 }) {
   return (
     <View style={styles.header}>
-      <View style={styles.headerSide}>{leftIcon ? <AppIcon name={leftIcon} size={22} /> : null}</View>
+      <View style={styles.headerSide}>
+        {leftIcon ? (
+          <TouchableOpacity
+            accessibilityRole="button"
+            onPress={onLeftPress}
+            disabled={!onLeftPress}
+            style={styles.headerButton}
+            activeOpacity={0.8}
+          >
+            <AppIcon name={leftIcon} size={22} />
+          </TouchableOpacity>
+        ) : null}
+      </View>
       <View style={styles.headerCopy}>
         <Text style={styles.headerTitle}>{title}</Text>
         {subtitle ? <Text style={styles.headerSubtitle}>{subtitle}</Text> : null}
       </View>
-      <View style={styles.headerSide}>{rightIcon ? <AppIcon name={rightIcon} size={22} /> : null}</View>
+      <View style={styles.headerSide}>
+        {rightIcon ? (
+          <TouchableOpacity
+            accessibilityRole="button"
+            onPress={onRightPress}
+            disabled={!onRightPress}
+            style={styles.headerButton}
+            activeOpacity={0.8}
+          >
+            <AppIcon name={rightIcon} size={22} />
+          </TouchableOpacity>
+        ) : null}
+      </View>
     </View>
   );
 }
@@ -202,15 +230,17 @@ export function GradientCard({
   title,
   subtitle,
   cta,
-  icon
+  icon,
+  onPress
 }: {
   title: string;
   subtitle: string;
   cta: string;
   icon?: IconName;
+  onPress?: () => void;
 }) {
   return (
-    <TouchableOpacity style={styles.heroCard} activeOpacity={0.86}>
+    <TouchableOpacity style={styles.heroCard} activeOpacity={0.86} onPress={onPress}>
       <View style={styles.heroGlow} />
       <View style={styles.heroGlowSecond} />
       <View style={styles.heroRidge} />
@@ -225,9 +255,21 @@ export function GradientCard({
   );
 }
 
-export function QuickActionCard({ title, icon, color, onPress }: { title: string; icon: IconName; color: string; onPress?: () => void }) {
+export function QuickActionCard({
+  title,
+  icon,
+  color,
+  onPress,
+  disabled = false
+}: {
+  title: string;
+  icon: IconName;
+  color: string;
+  onPress?: () => void;
+  disabled?: boolean;
+}) {
   return (
-    <TouchableOpacity style={styles.quickCard} activeOpacity={0.86} onPress={onPress}>
+    <TouchableOpacity style={[styles.quickCard, disabled && styles.quickCardDisabled]} activeOpacity={0.86} onPress={onPress} disabled={disabled}>
       <View style={[styles.iconBadge, styles.quickIconBadge, { backgroundColor: `${color}1F` }]}>
         <AppIcon name={icon} color={color} size={20} />
       </View>
@@ -515,7 +557,14 @@ export function SettingsRow({ label, value, icon, onPress }: { label: string; va
   );
 }
 
-export function Card({ children, style }: { children: React.ReactNode; style?: object }) {
+export function Card({ children, style, onPress }: { children: React.ReactNode; style?: object; onPress?: () => void }) {
+  if (onPress) {
+    return (
+      <TouchableOpacity style={[styles.card, style]} activeOpacity={0.86} onPress={onPress}>
+        {children}
+      </TouchableOpacity>
+    );
+  }
   return <View style={[styles.card, style]}>{children}</View>;
 }
 
@@ -550,6 +599,12 @@ export function MessageInput({
   const [modeOpen, setModeOpen] = React.useState(false);
   const voiceIconName: IconName = voiceActive ? "stop" : "mic";
   const modes: Mode[] = ["Vent", "Advice", "Calm", "Clarity"];
+  const modeDescriptions: Record<Mode, string> = {
+    Vent: "Unload first. Forge listens and reflects without rushing advice.",
+    Advice: "Get practical direction and one clear next step.",
+    Calm: "Slow down, regulate, and lower the intensity.",
+    Clarity: "Name the problem and think through what matters."
+  };
   const modeLabel = mode.slice(0, 2);
 
   function setInputFocused(nextFocused: boolean) {
@@ -560,20 +615,20 @@ export function MessageInput({
   return (
     <View style={styles.inputWrap}>
       {modeOpen ? (
-        <View style={styles.inputModeRow}>
-          {modes.map((item) => (
-            <TouchableOpacity
-              key={item}
-              style={[styles.inputModeChip, item === mode && styles.inputModeChipActive]}
-              onPress={() => {
-                onModeChange(item);
-                setModeOpen(false);
-              }}
-              activeOpacity={0.82}
-            >
-              <Text style={[styles.inputModeText, item === mode && styles.inputModeTextActive]}>{item}</Text>
-            </TouchableOpacity>
-          ))}
+        <View style={styles.inputModePanel}>
+          <View style={styles.inputModeRow}>
+            {modes.map((item) => (
+              <TouchableOpacity
+                key={item}
+                style={[styles.inputModeChip, item === mode && styles.inputModeChipActive]}
+                onPress={() => onModeChange(item)}
+                activeOpacity={0.82}
+              >
+                <Text style={[styles.inputModeText, item === mode && styles.inputModeTextActive]}>{item}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          <Text style={styles.inputModeDescription}>{modeDescriptions[mode]}</Text>
         </View>
       ) : null}
       <View style={styles.inputRow}>
@@ -656,6 +711,12 @@ const styles = StyleSheet.create({
   headerSide: {
     width: 38,
     minHeight: 38,
+    alignItems: "center",
+    justifyContent: "center"
+  },
+  headerButton: {
+    width: 38,
+    height: 38,
     alignItems: "center",
     justifyContent: "center"
   },
@@ -750,6 +811,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     padding: 9,
     justifyContent: "space-between"
+  },
+  quickCardDisabled: {
+    opacity: 0.55
   },
   iconBadge: {
     width: 36,
@@ -880,7 +944,8 @@ const styles = StyleSheet.create({
     gap: 8
   },
   chatText: {
-    flex: 1,
+    flexShrink: 1,
+    minWidth: 120,
     color: colors.text,
     fontSize: 14,
     lineHeight: 20
@@ -1132,12 +1197,15 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     padding: 6
   },
-  inputModeRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
+  inputModePanel: {
     gap: 6,
     paddingHorizontal: 4,
     paddingTop: 2
+  },
+  inputModeRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6
   },
   inputModeChip: {
     minHeight: 32,
@@ -1157,6 +1225,12 @@ const styles = StyleSheet.create({
   },
   inputModeTextActive: {
     color: colors.text
+  },
+  inputModeDescription: {
+    color: colors.secondaryText,
+    fontSize: 12,
+    lineHeight: 16,
+    paddingHorizontal: 4
   },
   inputRow: {
     flexDirection: "row",

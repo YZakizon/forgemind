@@ -1,11 +1,14 @@
 import asyncio
+import base64
 import json
 import logging
+import re
 import tempfile
+from dataclasses import dataclass
 from time import perf_counter
 from uuid import uuid4
 
-from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from prometheus_client import Counter, Histogram, generate_latest
 from starlette.responses import Response, StreamingResponse
 
@@ -16,6 +19,7 @@ from app.schemas import (
     AuthUser,
     ChatRequest,
     ChatResponse,
+    ChatResponseParts,
     DataControlResponse,
     GuidanceCreate,
     GuidanceRule,
@@ -27,6 +31,7 @@ from app.schemas import (
     ResetSessionCreate,
     SafetyEventListResponse,
     SafetyLevel,
+    SpeechRequest,
     SubscriptionValidationRequest,
     SubscriptionValidationResponse,
     UserDataExport,
@@ -48,11 +53,20 @@ REQUEST_LATENCY = Histogram("forgemind_http_request_seconds", "HTTP request late
 SAFETY_EVENTS = Counter("forgemind_safety_events_total", "Safety events", ["level"])
 MEMORY_RETRIEVAL_LATENCY = Histogram("forgemind_memory_retrieval_seconds", "Memory retrieval latency")
 AI_LATENCY = Histogram("forgemind_ai_response_seconds", "AI response latency")
+TTS_LATENCY = Histogram("forgemind_tts_seconds", "Text to speech latency")
 
 app = FastAPI(title="ForgeMind API", version="0.1.0")
 configure_observability()
 
 guidance_rules: dict[str, GuidanceRule] = {rule.id: rule for rule in DEFAULT_GUIDANCE_RULES}
+
+
+@dataclass
+class VoiceTranscriptSegment:
+    index: int
+    text: str
+    started_at_ms: int | None = None
+    ended_at_ms: int | None = None
 
 
 @app.middleware("http")
@@ -75,13 +89,13 @@ def config():
 
 
 @app.post("/auth/login", response_model=AuthResponse)
-def login(payload: AuthRequest) -> AuthResponse:
+async def login(payload: AuthRequest) -> AuthResponse:
     try:
         user_id = verify_identity_token(payload.provider, payload.identity_token)
     except ValueError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
 
-    async def _persist_user() -> None:
+    try:
         await store.upsert_user(
             user_id=user_id,
             email=f"{payload.provider}-{user_id}@forgemind.local",
@@ -89,9 +103,6 @@ def login(payload: AuthRequest) -> AuthResponse:
             provider=payload.provider.value,
             subject=payload.identity_token,
         )
-
-    try:
-        asyncio.run(_persist_user())
     except Exception:
         logger.exception("auth user persistence failed", extra={"user_id": user_id, "provider": payload.provider.value})
     capture_event("auth_login", {"user_id": user_id, "provider": payload.provider.value})
@@ -119,8 +130,8 @@ def _require_user_access(user_id: str, authorization: str | None) -> None:
 
 
 @app.post("/chat", response_model=ChatResponse)
-def chat(payload: ChatRequest) -> ChatResponse:
-    return _run_chat(payload)
+async def chat(payload: ChatRequest) -> ChatResponse:
+    return await _chat_flow(payload)
 
 
 @app.post("/chat/stream")
@@ -144,8 +155,10 @@ async def _chat_flow(payload: ChatRequest, transcript: str | None = None) -> Cha
     SAFETY_EVENTS.labels(safety.level.value).inc()
     if safety.level == SafetyLevel.crisis:
         await _try_store_safety(payload.user_id, safety.level, safety.reasons)
+        crisis_response = safety.crisis_response or ""
         return ChatResponse(
-            response=safety.crisis_response or "",
+            response=crisis_response,
+            response_parts=split_response_parts(crisis_response),
             safety_level=safety.level,
             memories_used=[],
             guidance_topics=[],
@@ -153,12 +166,14 @@ async def _chat_flow(payload: ChatRequest, transcript: str | None = None) -> Cha
         )
     if safety.level == SafetyLevel.high:
         await _try_store_safety(payload.user_id, safety.level, safety.reasons)
+        high_response = (
+            "This sounds like a safety situation, not a normal coaching moment. "
+            "If there is immediate danger, call emergency services now. If you can, "
+            "move to a safer place and contact one trusted person nearby."
+        )
         return ChatResponse(
-            response=(
-                "This sounds like a safety situation, not a normal coaching moment. "
-                "If there is immediate danger, call emergency services now. If you can, "
-                "move to a safer place and contact one trusted person nearby."
-            ),
+            response=high_response,
+            response_parts=split_response_parts(high_response),
             safety_level=safety.level,
             memories_used=[],
             guidance_topics=[],
@@ -197,7 +212,7 @@ async def _chat_flow(payload: ChatRequest, transcript: str | None = None) -> Cha
     guidance_block = build_guidance_prompt_block(guidance)
 
     with AI_LATENCY.time():
-        response = provider.generate_response(payload.message, payload.mode, memory_block, guidance_block)
+        response = provider.generate_response(payload.message, payload.mode, memory_block, guidance_block, payload.history)
     response_safety = validate_response_safety(response)
     if response_safety.value in {SafetyLevel.high.value, SafetyLevel.crisis.value}:
         raise HTTPException(status_code=500, detail="Generated response failed safety validation")
@@ -232,6 +247,7 @@ async def _chat_flow(payload: ChatRequest, transcript: str | None = None) -> Cha
 
     return ChatResponse(
         response=response,
+        response_parts=split_response_parts(response),
         safety_level=safety.level,
         memories_used=[memory.id for memory in memories],
         guidance_topics=[rule.topic for rule in guidance],
@@ -240,12 +256,136 @@ async def _chat_flow(payload: ChatRequest, transcript: str | None = None) -> Cha
     )
 
 
-def _run_chat(payload: ChatRequest, transcript: str | None = None) -> ChatResponse:
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(_chat_flow(payload, transcript))
-    raise RuntimeError("Use _chat_flow from async contexts")
+def split_response_parts(response: str) -> ChatResponseParts:
+    text = " ".join(response.split())
+    question_mark = text.rfind("?")
+    if question_mark == -1:
+        return ChatResponseParts(body=text)
+
+    question_start = max(text.rfind(".", 0, question_mark), text.rfind("!", 0, question_mark), text.rfind("\n", 0, question_mark)) + 1
+    question = text[question_start : question_mark + 1].strip()
+    body = (text[:question_start] + text[question_mark + 1 :]).strip()
+    body = drop_leading_question_sentences(body)
+    if not body or len(question.split()) < 3:
+        return ChatResponseParts(body=text)
+    return ChatResponseParts(body=body, question=question)
+
+
+def drop_leading_question_sentences(text: str) -> str:
+    cleaned = text.strip()
+    while cleaned:
+        question_mark = cleaned.find("?")
+        if question_mark == -1:
+            return cleaned
+        first_stop_candidates = [index for index in [cleaned.find("."), cleaned.find("!")] if index != -1]
+        first_stop = min(first_stop_candidates) if first_stop_candidates else -1
+        if first_stop != -1 and first_stop < question_mark:
+            return cleaned
+        remainder = cleaned[question_mark + 1 :].strip()
+        if not remainder:
+            return text.strip()
+        cleaned = remainder
+    return cleaned
+
+
+def merge_transcript_segments(segments: list[VoiceTranscriptSegment], clean_punctuation: bool = True) -> str:
+    merged = ""
+    for segment in sorted(segments, key=lambda item: item.index):
+        text = " ".join(segment.text.split())
+        if is_empty_or_prompt_echo_transcript(text):
+            text = ""
+        if not text:
+            continue
+        if not merged:
+            merged = text
+            continue
+        merged = merge_overlapping_text(merged, text)
+    return clean_transcript_punctuation(merged) if clean_punctuation else merged
+
+
+def merge_overlapping_text(current: str, next_text: str, max_overlap_words: int = 14) -> str:
+    current_words = current.split()
+    next_words = next_text.split()
+    max_overlap = min(max_overlap_words, len(current_words), len(next_words))
+    for size in range(max_overlap, 0, -1):
+        if normalize_words(current_words[-size:]) == normalize_words(next_words[:size]):
+            remainder = " ".join(next_words[size:])
+            return current if not remainder else f"{current} {remainder}"
+    return f"{current} {next_text}"
+
+
+def normalize_words(words: list[str]) -> list[str]:
+    return [word.strip(".,!?;:\"'()[]{}").casefold() for word in words]
+
+
+def clean_transcript_punctuation(text: str) -> str:
+    cleaned = " ".join(text.split())
+    for punctuation in [".", ",", "!", "?", ";", ":"]:
+        cleaned = cleaned.replace(f" {punctuation}", punctuation)
+    return cleaned[:1].upper() + cleaned[1:] if cleaned else cleaned
+
+
+def is_empty_or_prompt_echo_transcript(text: str) -> bool:
+    normalized = " ".join(text.split()).strip()
+    if not normalized:
+        return True
+    prompt_echoes = {
+        "preserve the user's natural wording",
+        "preserve the users natural wording",
+        "preserve users natural wording",
+        "preserve user natural wording",
+        "keep the user's natural wording and language",
+        "keep the users natural wording and language",
+        "transcribe in the same language the user is speaking",
+        "forgemind voice journal",
+    }
+    normalized_words = normalize_words(normalized.split())
+    normalized_compact = " ".join(normalized_words)
+    return any(echo in normalized_compact for echo in prompt_echoes)
+
+
+def split_tts_chunks(text: str, max_chars: int = 180) -> list[str]:
+    normalized = " ".join(text.split())
+    if not normalized:
+        return []
+    sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", normalized) if part.strip()]
+    if not sentences:
+        return [normalized]
+
+    chunks: list[str] = []
+    current = ""
+    for sentence in sentences:
+        if len(sentence) > max_chars:
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.extend(split_long_tts_sentence(sentence, max_chars))
+            continue
+        next_chunk = f"{current} {sentence}".strip() if current else sentence
+        if current and len(next_chunk) > max_chars:
+            chunks.append(current)
+            current = sentence
+        else:
+            current = next_chunk
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def split_long_tts_sentence(sentence: str, max_chars: int) -> list[str]:
+    words = sentence.split()
+    chunks: list[str] = []
+    current = ""
+    for word in words:
+        next_chunk = f"{current} {word}".strip() if current else word
+        if current and len(next_chunk) > max_chars:
+            chunks.append(current)
+            current = word
+        else:
+            current = next_chunk
+    if current:
+        chunks.append(current)
+    return chunks
 
 
 async def _try_store_safety(user_id: str, level: SafetyLevel, reasons: list[str]) -> None:
@@ -258,26 +398,168 @@ async def _try_store_safety(user_id: str, level: SafetyLevel, reasons: list[str]
 
 
 async def _transcribe_uploaded_audio(audio: UploadFile) -> str:
+    suffix = ".m4a" if not audio.filename else "." + audio.filename.rsplit(".", 1)[-1]
+    return await _transcribe_audio_bytes(await audio.read(), suffix)
+
+
+async def _transcribe_audio_bytes(audio: bytes, suffix: str = ".m4a") -> str:
     provider = OpenAIProvider()
-    if not provider.enabled:
+    if not provider.stt_enabled:
         raise HTTPException(status_code=503, detail="Voice transcription needs OPENAI_API_KEY")
 
-    suffix = ".m4a" if not audio.filename else "." + audio.filename.rsplit(".", 1)[-1]
     with tempfile.NamedTemporaryFile(suffix=suffix) as temporary:
-        temporary.write(await audio.read())
+        temporary.write(audio)
         temporary.flush()
         try:
             transcript = provider.transcribe_audio(temporary.name)
         except Exception as exc:
             raise HTTPException(status_code=502, detail="Voice transcription failed") from exc
 
-    if not transcript:
+    if is_empty_or_prompt_echo_transcript(transcript):
         raise HTTPException(status_code=422, detail="No speech detected")
     return transcript
 
 
 def _sse(event: str, payload: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(payload)}\n\n"
+
+
+async def _ws_send(websocket: WebSocket, event_type: str, payload: dict | None = None) -> None:
+    await websocket.send_json({"type": event_type, **(payload or {})})
+
+
+async def _ws_send_tts_audio(websocket: WebSocket, part: str, text: str, chunk_index: int = 0, chunk_total: int = 1) -> None:
+    provider = OpenAIProvider()
+    if not provider.tts_enabled:
+        return
+    try:
+        with TTS_LATENCY.time():
+            audio = await asyncio.to_thread(provider.synthesize_speech, text)
+    except Exception:
+        logger.exception("voice websocket tts failed", extra={"part": part})
+        return
+    await _ws_send(
+        websocket,
+        "tts_audio",
+        {
+            "part": part,
+            "text": text,
+            "chunk_index": chunk_index,
+            "chunk_total": chunk_total,
+            "audio_base64": base64.b64encode(audio).decode("ascii"),
+            "format": speech_response_format(provider),
+            "media_type": speech_media_type(provider),
+        },
+    )
+
+
+@app.websocket("/voice/ws")
+async def voice_websocket(websocket: WebSocket):
+    await websocket.accept()
+    user_id = "00000000-0000-4000-8000-000000000001"
+    mode = "think_clearly"
+    history: list[dict[str, str]] = []
+    buffered_transcripts: dict[int, VoiceTranscriptSegment] = {}
+
+    try:
+        while True:
+            message = await websocket.receive_json()
+            message_type = message.get("type")
+
+            if message_type == "start":
+                user_id = str(message.get("user_id") or user_id)
+                mode = str(message.get("mode") or mode)
+                raw_history = message.get("history")
+                history = raw_history if isinstance(raw_history, list) else []
+                buffered_transcripts = {}
+                await _ws_send(websocket, "ready")
+                continue
+
+            if message_type == "audio_chunk":
+                chunk_index = int(message.get("index") or len(buffered_transcripts))
+                audio_base64 = message.get("audio_base64")
+                if not isinstance(audio_base64, str) or not audio_base64:
+                    await _ws_send(websocket, "error", {"detail": "Missing audio chunk"})
+                    continue
+                try:
+                    audio = base64.b64decode(audio_base64)
+                    suffix = str(message.get("suffix") or ".m4a")
+                    transcript = await _transcribe_audio_bytes(audio, suffix if suffix.startswith(".") else f".{suffix}")
+                except HTTPException as exc:
+                    if exc.status_code == 422:
+                        buffered_transcripts[chunk_index] = VoiceTranscriptSegment(
+                            index=chunk_index,
+                            text="",
+                            started_at_ms=message.get("started_at_ms"),
+                            ended_at_ms=message.get("ended_at_ms"),
+                        )
+                        await _ws_send(websocket, "transcript", {"index": chunk_index, "text": ""})
+                        continue
+                    await _ws_send(websocket, "error", {"detail": exc.detail, "status_code": exc.status_code})
+                    continue
+                segment = VoiceTranscriptSegment(
+                    index=chunk_index,
+                    text=transcript,
+                    started_at_ms=message.get("started_at_ms"),
+                    ended_at_ms=message.get("ended_at_ms"),
+                )
+                buffered_transcripts[chunk_index] = segment
+                await _ws_send(
+                    websocket,
+                    "transcript",
+                    {
+                        "index": chunk_index,
+                        "text": transcript,
+                        "started_at_ms": segment.started_at_ms,
+                        "ended_at_ms": segment.ended_at_ms,
+                    },
+                )
+                continue
+
+            if message_type == "stop":
+                transcript = merge_transcript_segments(list(buffered_transcripts.values()))
+                if not transcript:
+                    await _ws_send(websocket, "error", {"detail": "No speech detected", "status_code": 422})
+                    await _ws_send(websocket, "done")
+                    buffered_transcripts = {}
+                    continue
+
+                await _ws_send(
+                    websocket,
+                    "final_transcript",
+                    {
+                        "text": transcript,
+                        "segments": [
+                            {
+                                "index": segment.index,
+                                "text": segment.text,
+                                "started_at_ms": segment.started_at_ms,
+                                "ended_at_ms": segment.ended_at_ms,
+                            }
+                            for segment in sorted(buffered_transcripts.values(), key=lambda item: item.index)
+                        ],
+                    },
+                )
+                response = await _chat_flow(ChatRequest(user_id=user_id, message=transcript, mode=mode, history=history), transcript=transcript)
+                parts = response.response_parts or split_response_parts(response.response)
+                body_chunks = split_tts_chunks(parts.body)
+                for index, chunk in enumerate(body_chunks):
+                    await _ws_send_tts_audio(websocket, "body", chunk, index, len(body_chunks))
+                    await _ws_send(websocket, "response_part", {"part": "body", "text": chunk, "chunk_index": index, "chunk_total": len(body_chunks)})
+                if parts.question:
+                    await _ws_send_tts_audio(websocket, "question", parts.question, 0, 1)
+                    await _ws_send(websocket, "response_part", {"part": "question", "text": parts.question, "chunk_index": 0, "chunk_total": 1})
+                await _ws_send(websocket, "response", {"payload": response.model_dump(mode="json")})
+                await _ws_send(websocket, "done")
+                buffered_transcripts = {}
+                continue
+
+            await _ws_send(websocket, "error", {"detail": f"Unknown voice event: {message_type}"})
+    except WebSocketDisconnect:
+        return
+    except Exception:
+        logger.exception("voice websocket failed", extra={"user_id": user_id})
+        await _ws_send(websocket, "error", {"detail": "Voice chat failed", "status_code": 500})
 
 
 @app.post("/voice-chat", response_model=ChatResponse)
@@ -318,6 +600,38 @@ async def voice_chat_stream(
     return StreamingResponse(events(), media_type="text/event-stream")
 
 
+@app.post("/speech")
+def speech(payload: SpeechRequest) -> Response:
+    provider = OpenAIProvider()
+    if not provider.tts_enabled:
+        raise HTTPException(status_code=503, detail="Text to speech needs a configured TTS provider API key")
+
+    try:
+        with TTS_LATENCY.time():
+            audio = provider.synthesize_speech(payload.text)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Text to speech failed") from exc
+
+    return Response(
+        content=audio,
+        media_type=speech_media_type(provider),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+def speech_media_type(provider: OpenAIProvider) -> str:
+    response_format = speech_response_format(provider)
+    if response_format == "mp3":
+        return "audio/mpeg"
+    return f"audio/{response_format}"
+
+
+def speech_response_format(provider: OpenAIProvider) -> str:
+    if provider.settings.tts_provider == "deepgram":
+        return provider.settings.deepgram_tts_encoding
+    return provider.settings.openai_tts_response_format
+
+
 @app.post("/safety/classify")
 def safety_classify(payload: ChatRequest):
     result = classify_safety(payload.message)
@@ -326,15 +640,12 @@ def safety_classify(payload: ChatRequest):
 
 
 @app.get("/safety/events", response_model=SafetyEventListResponse)
-def list_safety_events() -> SafetyEventListResponse:
-    async def _list() -> SafetyEventListResponse:
-        try:
-            return SafetyEventListResponse(items=await store.list_safety_events())
-        except Exception:
-            logger.exception("list safety events failed")
-            return SafetyEventListResponse(items=[])
-
-    return asyncio.run(_list())
+async def list_safety_events() -> SafetyEventListResponse:
+    try:
+        return SafetyEventListResponse(items=await store.list_safety_events())
+    except Exception:
+        logger.exception("list safety events failed")
+        return SafetyEventListResponse(items=[])
 
 
 @app.get("/guidance/rules", response_model=list[GuidanceRule])
@@ -367,26 +678,20 @@ def delete_guidance_rule(rule_id: str) -> dict[str, str]:
 
 
 @app.get("/memories", response_model=MemoryListResponse)
-def list_memories(user_id: str) -> MemoryListResponse:
-    async def _list() -> MemoryListResponse:
-        try:
-            return MemoryListResponse(items=await store.list_user_memories(user_id))
-        except Exception:
-            logger.exception("list memories failed", extra={"user_id": user_id})
-            return MemoryListResponse(items=[])
-
-    return asyncio.run(_list())
+async def list_memories(user_id: str) -> MemoryListResponse:
+    try:
+        return MemoryListResponse(items=await store.list_user_memories(user_id))
+    except Exception:
+        logger.exception("list memories failed", extra={"user_id": user_id})
+        return MemoryListResponse(items=[])
 
 
 @app.post("/memories/archive", response_model=DataControlResponse)
-def archive_memories(user_id: str, authorization: str | None = Header(default=None)) -> DataControlResponse:
+async def archive_memories(user_id: str, authorization: str | None = Header(default=None)) -> DataControlResponse:
     _require_user_access(user_id, authorization)
 
-    async def _archive() -> int:
-        return await store.archive_user_memories(user_id)
-
     try:
-        archived = asyncio.run(_archive())
+        archived = await store.archive_user_memories(user_id)
         capture_event("memories_archived", {"user_id": user_id, "count": archived})
         return DataControlResponse(user_id=user_id, status="archived", detail=f"Archived {archived} active memories.")
     except Exception as exc:
@@ -395,14 +700,11 @@ def archive_memories(user_id: str, authorization: str | None = Header(default=No
 
 
 @app.get("/users/{user_id}/export", response_model=UserDataExport)
-def export_user_data(user_id: str, authorization: str | None = Header(default=None)) -> UserDataExport:
+async def export_user_data(user_id: str, authorization: str | None = Header(default=None)) -> UserDataExport:
     _require_user_access(user_id, authorization)
 
-    async def _export() -> UserDataExport:
-        return await store.export_user_data(user_id)
-
     try:
-        result = asyncio.run(_export())
+        result = await store.export_user_data(user_id)
         capture_event("user_data_exported", {"user_id": user_id})
         return result
     except Exception as exc:
@@ -411,14 +713,11 @@ def export_user_data(user_id: str, authorization: str | None = Header(default=No
 
 
 @app.delete("/users/{user_id}/data", response_model=DataControlResponse)
-def delete_user_data(user_id: str, authorization: str | None = Header(default=None)) -> DataControlResponse:
+async def delete_user_data(user_id: str, authorization: str | None = Header(default=None)) -> DataControlResponse:
     _require_user_access(user_id, authorization)
 
-    async def _delete() -> None:
-        await store.delete_user_data(user_id)
-
     try:
-        asyncio.run(_delete())
+        await store.delete_user_data(user_id)
         capture_event("user_data_deleted", {"user_id": user_id})
         return DataControlResponse(user_id=user_id, status="deleted", detail="Deleted stored chat, memory, check-in, reset, subscription, and safety data.")
     except Exception as exc:
@@ -427,12 +726,9 @@ def delete_user_data(user_id: str, authorization: str | None = Header(default=No
 
 
 @app.post("/mood-checkins", response_model=MoodCheckin)
-def create_mood_checkin(payload: MoodCheckinCreate) -> MoodCheckin:
-    async def _create() -> MoodCheckin:
-        return await store.create_mood_checkin(payload.user_id, payload.label, payload.intensity, payload.note)
-
+async def create_mood_checkin(payload: MoodCheckinCreate) -> MoodCheckin:
     try:
-        result = asyncio.run(_create())
+        result = await store.create_mood_checkin(payload.user_id, payload.label, payload.intensity, payload.note)
         capture_event("mood_checkin_created", {"user_id": payload.user_id, "label": payload.label})
         return result
     except Exception as exc:
@@ -441,12 +737,9 @@ def create_mood_checkin(payload: MoodCheckinCreate) -> MoodCheckin:
 
 
 @app.post("/reset-sessions", response_model=ResetSession)
-def create_reset_session(payload: ResetSessionCreate) -> ResetSession:
-    async def _create() -> ResetSession:
-        return await store.create_reset_session(payload.user_id, payload.reset_type, payload.notes)
-
+async def create_reset_session(payload: ResetSessionCreate) -> ResetSession:
     try:
-        result = asyncio.run(_create())
+        result = await store.create_reset_session(payload.user_id, payload.reset_type, payload.notes)
         capture_event("reset_session_started", {"user_id": payload.user_id, "reset_type": payload.reset_type})
         return result
     except Exception as exc:
@@ -455,12 +748,9 @@ def create_reset_session(payload: ResetSessionCreate) -> ResetSession:
 
 
 @app.post("/reset-sessions/{reset_id}/complete", response_model=ResetSession)
-def complete_reset_session(reset_id: str, user_id: str) -> ResetSession:
-    async def _complete() -> ResetSession:
-        return await store.complete_reset_session(reset_id, user_id)
-
+async def complete_reset_session(reset_id: str, user_id: str) -> ResetSession:
     try:
-        result = asyncio.run(_complete())
+        result = await store.complete_reset_session(reset_id, user_id)
         capture_event("reset_session_completed", {"user_id": user_id, "reset_type": result.reset_type})
         return result
     except ValueError as exc:
@@ -471,22 +761,19 @@ def complete_reset_session(reset_id: str, user_id: str) -> ResetSession:
 
 
 @app.get("/progress/summary", response_model=ProgressSummary)
-def progress_summary(user_id: str) -> ProgressSummary:
-    async def _summary() -> ProgressSummary:
-        return await store.get_progress_summary(user_id)
-
+async def progress_summary(user_id: str) -> ProgressSummary:
     try:
-        return asyncio.run(_summary())
+        return await store.get_progress_summary(user_id)
     except Exception:
         logger.exception("progress summary failed", extra={"user_id": user_id})
         return ProgressSummary(user_id=user_id)
 
 
 @app.post("/subscriptions/validate", response_model=SubscriptionValidationResponse)
-def validate_subscription(payload: SubscriptionValidationRequest) -> SubscriptionValidationResponse:
+async def validate_subscription(payload: SubscriptionValidationRequest) -> SubscriptionValidationResponse:
     result = validate_store_purchase(payload.user_id, payload.platform, payload.receipt_or_purchase_token, payload.product_id)
 
-    async def _persist() -> bool:
+    try:
         await store.save_subscription_validation(
             user_id=result.user_id,
             platform=result.platform,
@@ -494,10 +781,7 @@ def validate_subscription(payload: SubscriptionValidationRequest) -> Subscriptio
             valid=result.valid,
             store_transaction_id=payload.receipt_or_purchase_token,
         )
-        return True
-
-    try:
-        result.persisted = asyncio.run(_persist())
+        result.persisted = True
     except Exception:
         logger.exception("subscription validation persistence failed", extra={"user_id": result.user_id, "platform": result.platform})
         result.persisted = False

@@ -7,17 +7,55 @@ const { ForgeMindConfig } = NativeModules as {
 };
 
 export const API_BASE_URL = ForgeMindConfig?.API_BASE_URL ?? "http://127.0.0.1:8005";
+const API_BASE_URLS = Array.from(
+  new Set([API_BASE_URL, "http://127.0.0.1:8005", "http://10.0.2.2:8005"])
+);
+const BACKEND_REQUEST_TIMEOUT_MS = 3_000;
+export const VOICE_WS_URL = `${API_BASE_URL.replace(/^http/, "ws")}/voice/ws`;
 export const DEMO_USER_ID = "00000000-0000-4000-8000-000000000001";
 let demoAccessToken: string | null = null;
+let activeBackendBaseUrl: string | null = null;
 
 export type ForgeChatResponse = {
   response: string;
+  response_parts?: {
+    body: string;
+    question?: string | null;
+  } | null;
   safety_level: string;
   memories_used: string[];
   guidance_topics: string[];
   transcript?: string | null;
   persisted: boolean;
 };
+
+export type ChatHistoryItem = {
+  role: "forge" | "user";
+  text: string;
+};
+
+export type VoiceSocketMessage =
+  | { type: "ready" }
+  | { type: "transcript"; index: number; text: string; started_at_ms?: number | null; ended_at_ms?: number | null }
+  | {
+      type: "final_transcript";
+      text: string;
+      segments?: Array<{ index: number; text: string; started_at_ms?: number | null; ended_at_ms?: number | null }>;
+    }
+  | { type: "response_part"; part: "body" | "question"; text: string; chunk_index?: number; chunk_total?: number }
+  | {
+      type: "tts_audio";
+      part: "body" | "question";
+      text: string;
+      chunk_index?: number;
+      chunk_total?: number;
+      audio_base64: string;
+      format?: string;
+      media_type?: string;
+    }
+  | { type: "response"; payload: ForgeChatResponse }
+  | { type: "done" }
+  | { type: "error"; detail?: string; status_code?: number };
 
 export type MoodCheckin = {
   id: string;
@@ -61,13 +99,45 @@ export type UserDataExport = {
   chat_messages: Array<Record<string, string | null>>;
 };
 
+async function fetchWithBackendFallback(path: string, init: () => RequestInit): Promise<Response> {
+  let lastError: unknown = null;
+  const baseUrls = activeBackendBaseUrl
+    ? [activeBackendBaseUrl, ...API_BASE_URLS.filter((baseUrl) => baseUrl !== activeBackendBaseUrl)]
+    : API_BASE_URLS;
+  for (const baseUrl of baseUrls) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), BACKEND_REQUEST_TIMEOUT_MS);
+    try {
+      const request = init();
+      const response = await fetch(`${baseUrl}${path}`, { ...request, signal: controller.signal });
+      if (response.ok || (response.status >= 400 && response.status < 500)) {
+        if (response.ok) {
+          activeBackendBaseUrl = baseUrl;
+        }
+        return response;
+      }
+      lastError = new Error(await response.text());
+    } catch (error) {
+      lastError = error;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+  throw new Error(networkErrorMessage(lastError));
+}
+
+function networkErrorMessage(error: unknown) {
+  const detail = error instanceof Error && error.message ? error.message : "Network request failed";
+  return `Backend is unreachable at ${API_BASE_URLS.join(", ")}. Last error: ${detail}`;
+}
+
 async function ensureDemoAccessToken(): Promise<string> {
   if (demoAccessToken) return demoAccessToken;
-  const response = await fetch(`${API_BASE_URL}/auth/login`, {
+  const response = await fetchWithBackendFallback("/auth/login", () => ({
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ provider: "google", identity_token: "demo-token" })
-  });
+  }));
   if (!response.ok) {
     throw new Error(await response.text());
   }
@@ -83,12 +153,17 @@ async function authHeaders() {
   return { Authorization: `Bearer ${await ensureDemoAccessToken()}` };
 }
 
-export async function sendChatMessage(message: string, mode: Mode): Promise<ForgeChatResponse> {
-  const response = await fetch(`${API_BASE_URL}/chat`, {
+export function createVoiceWebSocket(): WebSocket {
+  const baseUrl = activeBackendBaseUrl ?? API_BASE_URL;
+  return new WebSocket(`${baseUrl.replace(/^http/, "ws")}/voice/ws`);
+}
+
+export async function sendChatMessage(message: string, mode: Mode, history: ChatHistoryItem[] = []): Promise<ForgeChatResponse> {
+  const response = await fetchWithBackendFallback("/chat", () => ({
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ user_id: DEMO_USER_ID, message, mode: mode.toLowerCase() })
-  });
+    body: JSON.stringify({ user_id: DEMO_USER_ID, message, mode: mode.toLowerCase(), history })
+  }));
   if (!response.ok) {
     throw new Error(await response.text());
   }
@@ -96,11 +171,11 @@ export async function sendChatMessage(message: string, mode: Mode): Promise<Forg
 }
 
 export async function createMoodCheckin(label: string, intensity?: number): Promise<MoodCheckin> {
-  const response = await fetch(`${API_BASE_URL}/mood-checkins`, {
+  const response = await fetchWithBackendFallback("/mood-checkins", () => ({
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ user_id: DEMO_USER_ID, label, intensity })
-  });
+  }));
   if (!response.ok) {
     throw new Error(await response.text());
   }
@@ -170,18 +245,19 @@ export async function deleteUserData(): Promise<DataControlResponse> {
 }
 
 export async function sendVoiceMessage(audioPath: string, mode: Mode): Promise<ForgeChatResponse> {
-  const form = new FormData();
-  form.append("user_id", DEMO_USER_ID);
-  form.append("mode", mode.toLowerCase());
-  form.append("audio", {
-    uri: `file://${audioPath}`,
-    name: "forgemind-voice.m4a",
-    type: "audio/mp4"
-  } as unknown as Blob);
-
-  const response = await fetch(`${API_BASE_URL}/voice-chat`, {
-    method: "POST",
-    body: form
+  const response = await fetchWithBackendFallback("/voice-chat", () => {
+    const form = new FormData();
+    form.append("user_id", DEMO_USER_ID);
+    form.append("mode", mode.toLowerCase());
+    form.append("audio", {
+      uri: `file://${audioPath}`,
+      name: "forgemind-voice.m4a",
+      type: "audio/mp4"
+    } as unknown as Blob);
+    return {
+      method: "POST",
+      body: form
+    };
   });
   if (!response.ok) {
     throw new Error(await response.text());
@@ -196,16 +272,17 @@ type VoiceStreamHandlers = {
 };
 
 export async function transcribeVoiceMessage(audioPath: string): Promise<string> {
-  const form = new FormData();
-  form.append("audio", {
-    uri: `file://${audioPath}`,
-    name: "forgemind-voice.m4a",
-    type: "audio/mp4"
-  } as unknown as Blob);
-
-  const response = await fetch(`${API_BASE_URL}/voice-transcribe`, {
-    method: "POST",
-    body: form
+  const response = await fetchWithBackendFallback("/voice-transcribe", () => {
+    const form = new FormData();
+    form.append("audio", {
+      uri: `file://${audioPath}`,
+      name: "forgemind-voice.m4a",
+      type: "audio/mp4"
+    } as unknown as Blob);
+    return {
+      method: "POST",
+      body: form
+    };
   });
   if (!response.ok) {
     throw new Error(await response.text());
@@ -214,7 +291,12 @@ export async function transcribeVoiceMessage(audioPath: string): Promise<string>
   return result.transcript;
 }
 
-export async function sendChatMessageStream(message: string, mode: Mode, handlers: VoiceStreamHandlers = {}): Promise<ForgeChatResponse> {
+export async function sendChatMessageStream(
+  message: string,
+  mode: Mode,
+  history: ChatHistoryItem[] = [],
+  handlers: VoiceStreamHandlers = {}
+): Promise<ForgeChatResponse> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     let receivedLength = 0;
@@ -233,7 +315,7 @@ export async function sendChatMessageStream(message: string, mode: Mode, handler
       if (settled) return;
       settled = true;
       try {
-        const result = await sendChatMessage(message, mode);
+        const result = await sendChatMessage(message, mode, history);
         handlers.onResponse?.(result);
         resolve(result);
       } catch (error) {
@@ -302,6 +384,6 @@ export async function sendChatMessageStream(message: string, mode: Mode, handler
     xhr.open("POST", `${API_BASE_URL}/chat/stream`);
     xhr.setRequestHeader("Accept", "text/event-stream");
     xhr.setRequestHeader("Content-Type", "application/json");
-    xhr.send(JSON.stringify({ user_id: DEMO_USER_ID, message, mode: mode.toLowerCase() }));
+    xhr.send(JSON.stringify({ user_id: DEMO_USER_ID, message, mode: mode.toLowerCase(), history }));
   });
 }
