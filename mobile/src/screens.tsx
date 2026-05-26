@@ -358,6 +358,7 @@ export function TalkScreen() {
   const voiceSocketRef = useRef<WebSocket | null>(null);
   const voiceSocketInactivityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const talkFocusedRef = useRef(true);
+  const voiceTurnInFlightRef = useRef(false);
   const chunkIndexRef = useRef(0);
   const chunkStartedAtRef = useRef<number | null>(null);
   const lastVoiceAtRef = useRef<number | null>(null);
@@ -472,13 +473,25 @@ export function TalkScreen() {
     }, voiceSocketInactivityMs);
   }
 
-  function stopLocalTalkActivity() {
+  function stopLocalTalkActivity(finishVoiceTurn = false) {
     stopReadAloud();
     clearVoiceTimers();
     if (recordingRef.current && ForgeMindAudioRecorder) {
+      if (finishVoiceTurn && voiceDetectedRef.current) {
+        finishRecordingAndContinueVoiceTurn().catch(() => {
+          voiceTurnInFlightRef.current = false;
+          scheduleVoiceSocketInactivityClose();
+        });
+        setTranscribing(false);
+        setSending(false);
+        return;
+      }
       ForgeMindAudioRecorder.cancel().catch(() => undefined);
       recordingRef.current = false;
       setVoiceRecording(false);
+      if (finishVoiceTurn && !voiceDetectedRef.current) {
+        voiceTurnInFlightRef.current = false;
+      }
     }
     setTranscribing(false);
     setSending(false);
@@ -486,6 +499,34 @@ export function TalkScreen() {
     startedAtRef.current = null;
     chunkRotatingRef.current = false;
     pendingChunkUploadsRef.current = 0;
+    if (!voiceTurnInFlightRef.current) {
+      scheduleVoiceSocketInactivityClose();
+    }
+  }
+
+  async function finishRecordingAndContinueVoiceTurn() {
+    if (stoppingRef.current || !recordingRef.current || !ForgeMindAudioRecorder) return;
+    stoppingRef.current = true;
+    try {
+      const segmentStartedAt = chunkStartedAtRef.current ?? Date.now();
+      const segmentEndedAt = Date.now();
+      const finalChunkHadVoice = chunkVoiceDetectedRef.current;
+      const path = await ForgeMindAudioRecorder.stop();
+      recordingRef.current = false;
+      setVoiceRecording(false);
+      if (finalChunkHadVoice) {
+        await sendVoiceChunk(path, segmentStartedAt, segmentEndedAt);
+      } else {
+        ForgeMindAudioRecorder.deleteFile?.(path).catch(() => undefined);
+      }
+      startedAtRef.current = null;
+      sendVoiceStopWhenReady();
+    } finally {
+      stoppingRef.current = false;
+      recordingRef.current = false;
+      startedAtRef.current = null;
+      setVoiceRecording(false);
+    }
   }
 
   function toggleForgeSpeech(messageId: string, text: string) {
@@ -497,10 +538,11 @@ export function TalkScreen() {
   }
 
   const leaveTalk = useCallback(() => {
-    stopLocalTalkActivity();
+    stopLocalTalkActivity(false);
     voiceSocketRef.current?.close();
     voiceSocketRef.current = null;
     clearVoiceSocketInactivityTimer();
+    voiceTurnInFlightRef.current = false;
 
     if (navigation.canGoBack()) {
       navigation.goBack();
@@ -576,6 +618,7 @@ export function TalkScreen() {
     voiceSocketRef.current?.close();
     voiceSocketRef.current = null;
     pendingChunkUploadsRef.current = 0;
+    voiceTurnInFlightRef.current = false;
     chunkRotatingRef.current = false;
     voiceTranscriptRef.current = "";
     forgeStreamMessageIdRef.current = null;
@@ -654,8 +697,7 @@ export function TalkScreen() {
   useFocusEffect(
     useCallback(() => {
       return () => {
-        stopLocalTalkActivity();
-        scheduleVoiceSocketInactivityClose();
+        stopLocalTalkActivity(true);
       };
     }, [])
   );
@@ -719,6 +761,7 @@ export function TalkScreen() {
       queuedTtsAudioKeysRef.current.clear();
       chunkIndexRef.current = 0;
       pendingChunkUploadsRef.current = 0;
+      voiceTurnInFlightRef.current = true;
       chunkRotatingRef.current = false;
       voiceDetectedRef.current = false;
       chunkVoiceDetectedRef.current = false;
@@ -767,6 +810,7 @@ export function TalkScreen() {
         stopVoiceMessage().catch(() => undefined);
       }, maxVoiceRecordingMs);
     } catch (voiceError) {
+      voiceTurnInFlightRef.current = false;
       clearVoiceTimers();
       clearVoiceSocketInactivityTimer();
       voiceSocketRef.current?.close();
@@ -788,7 +832,11 @@ export function TalkScreen() {
     }
 
     if (message.type === "error") {
-      if (!talkFocusedRef.current) return;
+      voiceTurnInFlightRef.current = false;
+      if (!talkFocusedRef.current) {
+        scheduleVoiceSocketInactivityClose();
+        return;
+      }
       setError(voiceErrorMessage(new Error(message.detail || "Voice chat failed")));
       setTranscribing(false);
       setSending(false);
@@ -850,8 +898,12 @@ export function TalkScreen() {
     }
 
     if (message.type === "done") {
+      voiceTurnInFlightRef.current = false;
       setTranscribing(false);
       setSending(false);
+      if (!talkFocusedRef.current) {
+        scheduleVoiceSocketInactivityClose();
+      }
     }
   }
 
