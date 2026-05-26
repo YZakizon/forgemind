@@ -40,8 +40,9 @@ import {
   DEMO_USER_ID,
   exportUserData,
   fetchProgressSummary,
+  generateReplySuggestions,
   sendChatMessage,
-  sendChatMessageStream,
+  type ChatHistoryItem,
   type ForgeChatResponse,
   type ProgressSummary,
   type VoiceSocketMessage
@@ -230,7 +231,7 @@ export function HomeScreen() {
     }, 4_000);
     const stopTimer = setTimeout(() => {
       if (checkinRequestIdRef.current === requestId) {
-        setCheckinStatus("Check-in could not sync. Try again with the backend running.");
+        setCheckinStatus("Check-in could not sync. Please try again.");
         setSavingCheckin(false);
       }
     }, checkinTimeoutMs + 1_000);
@@ -243,7 +244,7 @@ export function HomeScreen() {
       setCheckinStatus(`${checkinFeedback(label)} Talk mode set to ${talkMode}.`);
     } catch {
       if (checkinRequestIdRef.current === requestId) {
-        setCheckinStatus("Check-in could not sync. Try again with the backend running.");
+        setCheckinStatus("Check-in could not sync. Please try again.");
       }
     } finally {
       clearTimeout(statusTimer);
@@ -361,6 +362,7 @@ export function TalkScreen() {
     question: ""
   });
   const queuedTtsAudioKeysRef = useRef<Set<string>>(new Set());
+  const suggestionRequestIdRef = useRef(0);
   const [messages, setMessages] = useState<Array<{ id: string; role: "forge" | "user"; text: string }>>([initialForgeMessage]);
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const conversationStarted = messages.some((message) => message.role === "user");
@@ -383,12 +385,24 @@ export function TalkScreen() {
     setReadAloudFollowups(false);
     setDraft("");
     setError(null);
+    suggestionRequestIdRef.current += 1;
     setSuggestions([]);
     setMessages([{ ...initialForgeMessage, id: `m1-${Date.now()}` }]);
   }
 
-  function updateSuggestionsFromConversation(response: string, userMessage: string) {
-    setSuggestions(buildReplySuggestions(response, userMessage, mode));
+  async function updateSuggestionsFromConversation(response: string, userMessage: string, history: ChatHistoryItem[] = buildChatHistory(messages)) {
+    const requestId = suggestionRequestIdRef.current + 1;
+    suggestionRequestIdRef.current = requestId;
+    try {
+      const generated = await generateReplySuggestions(userMessage, response, mode, history);
+      if (suggestionRequestIdRef.current === requestId) {
+        setSuggestions(generated.length ? generated : buildReplySuggestions(response, userMessage, mode));
+      }
+    } catch {
+      if (suggestionRequestIdRef.current === requestId) {
+        setSuggestions(buildReplySuggestions(response, userMessage, mode));
+      }
+    }
   }
 
   function scrollChatToBottom(animated = true) {
@@ -539,6 +553,7 @@ export function TalkScreen() {
     const history = buildChatHistory(messages);
     setDraft("");
     setError(null);
+    suggestionRequestIdRef.current += 1;
     setSuggestions([]);
     setSending(true);
     setMessages((current) => [...current, { id: `user-${Date.now()}`, role: "user", text: trimmed }]);
@@ -546,12 +561,16 @@ export function TalkScreen() {
       const result = await sendChatMessage(trimmed, mode, history);
       const messageId = `forge-${Date.now()}`;
       setMessages((current) => [...current, { id: messageId, role: "forge", text: result.response }]);
-      updateSuggestionsFromConversation(result.response, trimmed);
+      updateSuggestionsFromConversation(result.response, trimmed, [
+        ...history,
+        { role: "user", text: trimmed },
+        { role: "forge", text: result.response }
+      ]).catch(() => undefined);
       if (speakResponse) {
         speakForgeMessage(messageId, result.response, responseSpeechSegments(result));
       }
     } catch {
-      setError("Forge couldn’t reach the backend. Check the server and try again.");
+      setError("Forge is unable to connect. Please try again.");
     } finally {
       setSending(false);
     }
@@ -655,7 +674,7 @@ export function TalkScreen() {
         };
         socket.onmessage = (event) => handleVoiceSocketMessage(event.data);
         socket.onerror = () => {
-          setError("Voice failed: WebSocket connection failed.");
+          setError("Voice is unable to connect. Please try again.");
         };
         socket.onclose = () => {
           if (recordingRef.current) {
@@ -695,7 +714,7 @@ export function TalkScreen() {
     try {
       message = JSON.parse(data) as VoiceSocketMessage;
     } catch {
-      setError("Voice failed: backend sent an invalid message.");
+      setError("Voice is unable to connect. Please try again.");
       return;
     }
 
@@ -723,7 +742,7 @@ export function TalkScreen() {
       applyForgeStreamPart(message.part, partText, message.chunk_index ?? 0);
       updateForgeStreamMessage(messageId);
       if (message.part === "question") {
-        updateSuggestionsFromConversation(partText, voiceTranscriptRef.current);
+        updateSuggestionsFromConversation(partText, voiceTranscriptRef.current).catch(() => undefined);
       }
       return;
     }
@@ -750,7 +769,11 @@ export function TalkScreen() {
       } else {
         setMessages((current) => [...current, { id: `forge-${Date.now()}`, role: "forge", text: result.response }]);
       }
-      updateSuggestionsFromConversation(result.response, voiceTranscriptRef.current);
+      updateSuggestionsFromConversation(result.response, voiceTranscriptRef.current, [
+        ...buildChatHistory(messages),
+        { role: "user", text: voiceTranscriptRef.current },
+        { role: "forge", text: result.response }
+      ]).catch(() => undefined);
       return;
     }
 
@@ -1095,9 +1118,9 @@ function voiceErrorMessage(error: unknown) {
     if (error.message.includes("No speech detected")) {
       return "No voice is detected.";
     }
-    return `Voice failed: ${error.message}`;
+    return "Voice is unable to connect. Please try again.";
   }
-  return "Forge couldn’t process that recording. Try again when the backend is available.";
+  return "Forge is unable to process that recording. Please try again.";
 }
 
 function buildChatHistory(messages: Array<{ role: "forge" | "user"; text: string }>) {
@@ -1171,58 +1194,6 @@ function buildReplySuggestions(response: string, userMessage: string, mode: Mode
   const forge = response.toLowerCase();
   const user = userMessage.toLowerCase();
   const context = `${user} ${forge}`;
-  const lastQuestion = extractLastQuestion(response).toLowerCase();
-  const prompt = lastQuestion || forge;
-
-  if (lastQuestion) {
-    if (hasAny(prompt, ["hardest part", "most energy", "headspace", "weighing on you", "taking up the most", "hardest thing"])) {
-      return contextualOptions(context, {
-        work: ["Keeping up at work", "Feeling behind", "Too many decisions"],
-        relationship: ["The uncertainty", "I keep replaying it", "I don’t know where we stand"],
-        sleep: ["My mind won’t shut off", "I keep thinking ahead", "I feel exhausted"],
-        anger: ["Feeling disrespected", "I want to react", "I need to cool down"],
-        fallback: ["The pressure", "Feeling stuck", "I don’t know yet"]
-      });
-    }
-    if (hasAny(prompt, ["what happened", "what changed", "walk me through", "where did it start"])) {
-      return ["It started today", "There’s a pattern", "I need to explain"];
-    }
-    if (hasAny(prompt, ["what do you need", "what would help", "what feels useful", "what would be useful"])) {
-      return ["I need clarity", "Help me calm down", "Give me one step"];
-    }
-    if (hasAny(prompt, ["what are you tempted", "what might you regret", "what do you need to not do", "what are you worried you might do"])) {
-      return ["Send a message", "Argue back", "Shut down"];
-    }
-    if (hasAny(prompt, ["what can wait", "what can you put down", "what does not need solving"])) {
-      return ["Work can wait", "The decision can wait", "The argument can wait"];
-    }
-    if (hasAny(prompt, ["one thing", "first step", "next step", "smallest step"])) {
-      return ["Name the problem", "Take five minutes", "Make one decision"];
-    }
-    if (hasAny(prompt, ["how does that land", "does that fit", "feel accurate", "is that right"])) {
-      return ["Yes, that fits", "Not exactly", "There’s more"];
-    }
-    if (hasAny(prompt, ["which part", "what part"])) {
-      return ["The pressure", "The uncertainty", "The timing"];
-    }
-    if (hasAny(prompt, ["why", "what makes"])) {
-      return ["I feel responsible", "I don’t want to fail", "I’m tired of carrying it"];
-    }
-    if (hasAny(prompt, ["who", "with who", "from who"])) {
-      return ["My partner", "Someone at work", "My family"];
-    }
-    if (hasAny(prompt, ["when", "how long"])) {
-      return ["Since today", "All week", "For a while"];
-    }
-    return contextualOptions(context, {
-      work: ["It’s work pressure", "I feel overloaded", "I need boundaries"],
-      relationship: ["It’s the relationship", "I feel unsure", "I need to talk it out"],
-      sleep: ["I can’t sleep", "My thoughts keep going", "I need to wind down"],
-      anger: ["I’m still angry", "I feel triggered", "I need space first"],
-      fallback: ["I’m not sure", "There’s more", "Help me name it"]
-    });
-  }
-
   if (hasAny(forge, ["one safe next step", "next step", "one step"])) {
     return ["Give me one step", "Help me choose", "Make it simpler"];
   }
@@ -1235,14 +1206,9 @@ function buildReplySuggestions(response: string, userMessage: string, mode: Mode
       mode === "Advice"
         ? ["What should I do?", "Give me one step", "Help me decide"]
         : mode === "Calm"
-          ? ["Help me slow down", "I need grounding", "Stay with this"]
-          : ["Say more", "Help me slow down", "What am I missing?"]
+        ? ["Help me slow down", "I need grounding", "Stay with this"]
+        : ["Say more", "Help me slow down", "What am I missing?"]
   });
-}
-
-function extractLastQuestion(text: string) {
-  const questionMatches = text.match(/[^.!?\n]*\?/g);
-  return questionMatches?.at(-1)?.trim() ?? "";
 }
 
 function hasAny(text: string, terms: string[]) {
@@ -1288,7 +1254,7 @@ export function ResetScreen() {
       await completeResetSession(session.id);
       setStatus(`${title} completed`);
     } catch {
-      setStatus("Reset could not sync. Try again with the backend running.");
+      setStatus("Reset could not sync. Please try again.");
     }
   }
 
@@ -1424,7 +1390,7 @@ export function ProfileScreen() {
       setConfirmingDelete(false);
       setStatus(result.detail);
     } catch {
-      setStatus("Data control could not sync. Try again with the backend running.");
+      setStatus("Data control could not sync. Please try again.");
     }
   }
 

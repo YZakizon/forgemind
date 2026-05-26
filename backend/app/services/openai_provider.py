@@ -11,7 +11,7 @@ from urllib.request import Request, urlopen
 from openai import OpenAI
 
 from app.config import Settings, get_settings
-from app.services.ai import generate_grounded_response
+from app.services.ai import generate_fallback_reply_suggestions, generate_grounded_response
 
 CONVERSATION_INSTRUCTIONS = """You are ForgeMind, an AI mental health support companion for men.
 You are not a therapist, doctor, emergency service, or diagnostic tool.
@@ -107,6 +107,63 @@ class OpenAIProvider:
             return list(result.data[0].embedding)
         except Exception:
             return stable_demo_embedding(text)
+
+    def generate_reply_suggestions(
+        self,
+        user_message: str,
+        forge_message: str,
+        mode: str,
+        history: list[dict[str, str]] | None = None,
+    ) -> list[str]:
+        fallback = generate_fallback_reply_suggestions(user_message, forge_message, mode)
+        if not self.enabled:
+            return fallback
+
+        prompt = (
+            f"Mode: {mode}\n\n"
+            f"{build_history_block(history or [])}\n\n"
+            f"Latest user message:\n{user_message}\n\n"
+            f"Latest Forge message:\n{forge_message}\n\n"
+            "Generate exactly 3 short reply chips the user could tap to answer Forge's latest question. "
+            "Each chip must be written as the user speaking in first person, related to the latest Forge question, "
+            "not advice, not a question, not a repeat of Forge's words, and no more than 7 words. "
+            "Return only JSON like {\"suggestions\":[\"...\",\"...\",\"...\"]}."
+        )
+        try:
+            responses = getattr(self.client, "responses", None)
+            if responses is not None:
+                response = responses.create(
+                    model=self.settings.openai_chat_model,
+                    instructions=(
+                        "You write concise contextual reply chips for a mental fitness chat UI. "
+                        "The chips help the user answer the assistant's latest question."
+                    ),
+                    input=prompt,
+                    store=False,
+                )
+                output_text = getattr(response, "output_text", None)
+                parsed = parse_reply_suggestions(output_text or "")
+                if parsed:
+                    return parsed
+
+            completion = self.client.chat.completions.create(
+                model=self.settings.openai_chat_model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You write concise contextual reply chips for a mental fitness chat UI. "
+                            "Return only JSON."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+            )
+            content = completion.choices[0].message.content
+            parsed = parse_reply_suggestions(content or "")
+            return parsed or fallback
+        except Exception:
+            return fallback
 
     def transcribe_audio(self, audio_path: str | Path) -> str:
         if not self.stt_enabled:
@@ -207,3 +264,34 @@ def build_history_block(history: list[dict[str, str]]) -> str:
     if not lines:
         return "Recent conversation: none"
     return "Recent conversation:\n" + "\n".join(lines)
+
+
+def parse_reply_suggestions(text: str) -> list[str]:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`").strip()
+        if cleaned.lower().startswith("json"):
+            cleaned = cleaned[4:].strip()
+    try:
+        payload = json.loads(cleaned)
+    except json.JSONDecodeError:
+        return []
+    suggestions = payload.get("suggestions") if isinstance(payload, dict) else None
+    if not isinstance(suggestions, list):
+        return []
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in suggestions:
+        if not isinstance(item, str):
+            continue
+        suggestion = " ".join(item.split()).strip(" \"'")
+        if not suggestion or suggestion.endswith("?") or len(suggestion) > 80:
+            continue
+        key = suggestion.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(suggestion)
+        if len(result) == 3:
+            break
+    return result

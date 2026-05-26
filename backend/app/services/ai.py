@@ -27,3 +27,16 @@ def generate_grounded_response(message: str, mode: str, memory_block: str, guida
 def validate_response_safety(response: str) -> SafetyLevel:
     unsafe_terms = ("hurt yourself", "hurt someone", "revenge")
     return SafetyLevel.medium if any(term in response.lower() for term in unsafe_terms) else SafetyLevel.low
+
+
+def generate_fallback_reply_suggestions(user_message: str, forge_message: str, mode: str) -> list[str]:
+    context = f"{user_message} {forge_message} {mode}".lower()
+    if any(term in context for term in ["angry", "rage", "react", "disrespect"]):
+        return ["I need to cool down", "I want to respond", "I feel disrespected"]
+    if any(term in context for term in ["breakup", "ex", "partner", "relationship", "dating"]):
+        return ["I keep replaying it", "I need clarity", "I do not want to chase"]
+    if any(term in context for term in ["sleep", "tired", "night", "exhausted"]):
+        return ["My mind will not stop", "I need to wind down", "Tomorrow can wait"]
+    if any(term in context for term in ["work", "job", "boss", "deadline", "burnout", "overloaded"]):
+        return ["I feel overloaded", "The deadline is urgent", "Help me prioritize"]
+    return ["The pressure", "I feel stuck", "Help me name it"]

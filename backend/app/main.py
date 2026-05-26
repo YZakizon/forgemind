@@ -29,6 +29,8 @@ from app.schemas import (
     ProgressSummary,
     ResetSession,
     ResetSessionCreate,
+    ReplySuggestionsRequest,
+    ReplySuggestionsResponse,
     SafetyEventListResponse,
     SafetyLevel,
     SpeechRequest,
@@ -132,6 +134,18 @@ def _require_user_access(user_id: str, authorization: str | None) -> None:
 @app.post("/chat", response_model=ChatResponse)
 async def chat(payload: ChatRequest) -> ChatResponse:
     return await _chat_flow(payload)
+
+
+@app.post("/reply-suggestions", response_model=ReplySuggestionsResponse)
+async def reply_suggestions(payload: ReplySuggestionsRequest) -> ReplySuggestionsResponse:
+    provider = OpenAIProvider()
+    suggestions = provider.generate_reply_suggestions(
+        user_message=payload.user_message,
+        forge_message=payload.forge_message,
+        mode=payload.mode,
+        history=payload.history,
+    )
+    return ReplySuggestionsResponse(suggestions=suggestions[:3])
 
 
 @app.post("/chat/stream")

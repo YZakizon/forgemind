@@ -59,6 +59,18 @@ class ChatResponse(BaseModel):
     persisted: bool = False
 
 
+class ReplySuggestionsRequest(BaseModel):
+    user_id: str
+    user_message: str = Field(min_length=1, max_length=4000)
+    forge_message: str = Field(min_length=1, max_length=4000)
+    mode: str = "think_clearly"
+    history: list[dict[str, str]] = Field(default_factory=list)
+
+
+class ReplySuggestionsResponse(BaseModel):
+    suggestions: list[str] = Field(default_factory=list, max_length=3)
+
+
 class SpeechRequest(BaseModel):
     text: str = Field(min_length=1, max_length=4000)
 
