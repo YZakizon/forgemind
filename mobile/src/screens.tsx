@@ -602,13 +602,40 @@ export function TalkScreen() {
   }, []);
 
   useEffect(() => {
-    const timer = setInterval(() => setChatClock(Date.now()), 1_000);
-    return () => clearInterval(timer);
-  }, []);
-
-  useEffect(() => {
     navigation.setOptions({ tabBarStyle: { display: "none" } });
   }, [navigation]);
+
+  useFocusEffect(
+    useCallback(() => {
+      const timer = setInterval(() => setChatClock(Date.now()), 1_000);
+      return () => clearInterval(timer);
+    }, [])
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      return () => {
+        if (speechTimerRef.current) {
+          clearTimeout(speechTimerRef.current);
+          speechTimerRef.current = null;
+        }
+        setSpeakingMessageId(null);
+        ForgeMindTts?.stop?.().catch(() => undefined);
+        speechQueueTokenRef.current += 1;
+        speechQueueRef.current = Promise.resolve();
+        clearVoiceTimers();
+        voiceSocketRef.current?.close();
+        voiceSocketRef.current = null;
+        if (recordingRef.current && ForgeMindAudioRecorder) {
+          ForgeMindAudioRecorder.cancel().catch(() => undefined);
+          recordingRef.current = false;
+          setVoiceRecording(false);
+        }
+        setTranscribing(false);
+        setSending(false);
+      };
+    }, [])
+  );
 
   useFocusEffect(
     useCallback(() => {
