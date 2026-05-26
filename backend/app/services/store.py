@@ -31,6 +31,13 @@ def _vector_literal(values: list[float]) -> str:
     return "[" + ",".join(f"{value:.8f}" for value in values) + "]"
 
 
+def _is_missing_profile_facts_table(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "profile_facts" in message and (
+        "undefinedtable" in message or "does not exist" in message or "no such table" in message
+    )
+
+
 async def ensure_demo_user(user_id: str) -> None:
     parsed = _uuid(user_id)
     sessionmaker = get_sessionmaker()
@@ -280,14 +287,19 @@ async def insert_memories(user_id: str, contents: list[str], embedding_by_conten
 async def purge_expired_profile_facts(user_id: str | None = None) -> int:
     sessionmaker = get_sessionmaker()
     async with sessionmaker() as session:
-        if user_id:
-            result = await session.execute(
-                text("DELETE FROM profile_facts WHERE user_id = :user_id AND expires_at <= now()"),
-                {"user_id": _uuid(user_id)},
-            )
-        else:
-            result = await session.execute(text("DELETE FROM profile_facts WHERE expires_at <= now()"), {})
-        await session.commit()
+        try:
+            if user_id:
+                result = await session.execute(
+                    text("DELETE FROM profile_facts WHERE user_id = :user_id AND expires_at <= now()"),
+                    {"user_id": _uuid(user_id)},
+                )
+            else:
+                result = await session.execute(text("DELETE FROM profile_facts WHERE expires_at <= now()"), {})
+            await session.commit()
+        except Exception as exc:
+            if _is_missing_profile_facts_table(exc):
+                return 0
+            raise
     return int(result.rowcount or 0)
 
 
@@ -298,58 +310,68 @@ async def insert_profile_facts(user_id: str, facts: list[ExtractedProfileFact]) 
     await purge_expired_profile_facts(user_id)
     sessionmaker = get_sessionmaker()
     async with sessionmaker() as session:
-        for fact in facts:
-            await session.execute(
-                text(
-                    """
-                    INSERT INTO profile_facts (
-                        id, user_id, fact_type, label, value, sensitivity, source, confidence, expires_at
-                    )
-                    VALUES (
-                        :id, :user_id, :fact_type, :label, :value, :sensitivity, :source, :confidence, :expires_at
-                    )
-                    ON CONFLICT (user_id, fact_type, label, value) DO UPDATE SET
-                        sensitivity = EXCLUDED.sensitivity,
-                        source = EXCLUDED.source,
-                        confidence = GREATEST(profile_facts.confidence, EXCLUDED.confidence),
-                        expires_at = GREATEST(profile_facts.expires_at, EXCLUDED.expires_at),
-                        updated_at = now()
-                    """
-                ),
-                {
-                    "id": uuid4(),
-                    "user_id": _uuid(user_id),
-                    "fact_type": fact.fact_type,
-                    "label": fact.label,
-                    "value": fact.value,
-                    "sensitivity": fact.sensitivity,
-                    "source": fact.source,
-                    "confidence": fact.confidence,
-                    "expires_at": fact.expires_at,
-                },
-            )
-        await session.commit()
+        try:
+            for fact in facts:
+                await session.execute(
+                    text(
+                        """
+                        INSERT INTO profile_facts (
+                            id, user_id, fact_type, label, value, sensitivity, source, confidence, expires_at
+                        )
+                        VALUES (
+                            :id, :user_id, :fact_type, :label, :value, :sensitivity, :source, :confidence, :expires_at
+                        )
+                        ON CONFLICT (user_id, fact_type, label, value) DO UPDATE SET
+                            sensitivity = EXCLUDED.sensitivity,
+                            source = EXCLUDED.source,
+                            confidence = GREATEST(profile_facts.confidence, EXCLUDED.confidence),
+                            expires_at = GREATEST(profile_facts.expires_at, EXCLUDED.expires_at),
+                            updated_at = now()
+                        """
+                    ),
+                    {
+                        "id": uuid4(),
+                        "user_id": _uuid(user_id),
+                        "fact_type": fact.fact_type,
+                        "label": fact.label,
+                        "value": fact.value,
+                        "sensitivity": fact.sensitivity,
+                        "source": fact.source,
+                        "confidence": fact.confidence,
+                        "expires_at": fact.expires_at,
+                    },
+                )
+            await session.commit()
+        except Exception as exc:
+            if _is_missing_profile_facts_table(exc):
+                return
+            raise
 
 
 async def list_user_profile_facts(user_id: str) -> list[ProfileFact]:
     await purge_expired_profile_facts(user_id)
     sessionmaker = get_sessionmaker()
     async with sessionmaker() as session:
-        rows = list((
-            await session.execute(
-                text(
-                    """
-                    SELECT id, user_id, fact_type, label, value, sensitivity, source, confidence,
-                           created_at, updated_at, expires_at
-                    FROM profile_facts
-                    WHERE user_id = :user_id AND expires_at > now()
-                    ORDER BY updated_at DESC
-                    LIMIT 100
-                    """
-                ),
-                {"user_id": _uuid(user_id)},
-            )
-        ).mappings())
+        try:
+            rows = list((
+                await session.execute(
+                    text(
+                        """
+                        SELECT id, user_id, fact_type, label, value, sensitivity, source, confidence,
+                               created_at, updated_at, expires_at
+                        FROM profile_facts
+                        WHERE user_id = :user_id AND expires_at > now()
+                        ORDER BY updated_at DESC
+                        LIMIT 100
+                        """
+                    ),
+                    {"user_id": _uuid(user_id)},
+                )
+            ).mappings())
+        except Exception as exc:
+            if _is_missing_profile_facts_table(exc):
+                return []
+            raise
     return [_profile_fact_from_row(row) for row in rows]
 
 
