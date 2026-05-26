@@ -602,7 +602,7 @@ export function TalkScreen() {
   }, []);
 
   useEffect(() => {
-    const timer = setInterval(() => setChatClock(Date.now()), 60_000);
+    const timer = setInterval(() => setChatClock(Date.now()), 1_000);
     return () => clearInterval(timer);
   }, []);
 
@@ -1145,8 +1145,11 @@ function buildChatHistory(messages: Array<{ role: "forge" | "user"; text: string
 
 function humanizeChatDate(timestamp: number, now = Date.now()) {
   const elapsedMs = Math.max(0, now - timestamp);
+  const elapsedSeconds = Math.floor(elapsedMs / 1000);
+  if (elapsedSeconds < 10) return "Just now";
+  if (elapsedSeconds < 60) return `${elapsedSeconds}s ago`;
+
   const elapsedMinutes = Math.floor(elapsedMs / 60_000);
-  if (elapsedMinutes < 1) return "Just now";
   if (elapsedMinutes < 60) return `${elapsedMinutes} min ago`;
 
   const date = new Date(timestamp);
