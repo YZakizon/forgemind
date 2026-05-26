@@ -190,7 +190,7 @@ final_score =
 
 # Voice Architecture
 
-Current voice mode:
+Production voice mode:
 - WebSocket transport
 - continuous mobile recording
 - mobile VAD
@@ -201,6 +201,10 @@ Current voice mode:
 - target pre-roll of 300-500 ms
 - target post-roll of 700-1200 ms
 - target overlap of 500-1000 ms
+
+WebSocket is the active voice architecture, not a future/MVP-later item.
+Do not describe current Talk voice as POST-only Tap-to-Talk MVP.
+POST voice endpoints may remain only as compatibility/fallback paths.
 
 Backend voice flow:
 - send each segment to STT
