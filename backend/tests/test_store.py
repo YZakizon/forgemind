@@ -104,6 +104,7 @@ def test_delete_user_data_clears_user_owned_tables(monkeypatch):
         "mood_checkins",
         "subscriptions",
         "safety_events",
+        "profile_facts",
         "memories",
         "chat_messages",
         "chat_sessions",

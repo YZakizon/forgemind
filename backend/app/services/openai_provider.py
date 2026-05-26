@@ -12,6 +12,7 @@ from openai import OpenAI
 
 from app.config import Settings, get_settings
 from app.services.ai import generate_fallback_reply_suggestions, generate_grounded_response
+from app.services.profile_facts import ExtractedProfileFact, profile_facts_from_ai_payload
 
 CONVERSATION_INSTRUCTIONS = """You are ForgeMind, an AI mental health support companion for men.
 You are not a therapist, doctor, emergency service, or diagnostic tool.
@@ -26,6 +27,8 @@ Continue from the recent conversation instead of restarting. If you already aske
 Do not make every turn end with a new question. Sometimes reflect the thread, name the next step, or offer a short choice.
 Avoid polished essay structure, generic coaching language, and repeated question patterns.
 Do not encourage revenge, violence, dependency, shame, medical claims, or certainty in complex life problems.
+When timezone is unknown and timing matters, ask for it plainly and optionally.
+You may ask about habits only when relevant, non-intrusive, and non-private.
 If the user sounds overwhelmed, slow the pace and help them identify one safe next step."""
 
 
@@ -56,6 +59,7 @@ class OpenAIProvider:
         mode: str,
         memory_block: str,
         guidance_block: str,
+        profile_fact_block: str = "",
         history: list[dict[str, str]] | None = None,
     ) -> str:
         if not self.enabled:
@@ -67,6 +71,7 @@ class OpenAIProvider:
             "Use the user memory and recent conversation below as context. Do not repeat them back unless useful. "
             "Continue naturally from the latest turn.\n\n"
             f"{memory_block}\n\n"
+            f"{profile_fact_block}\n\n"
             f"{guidance_block}\n\n"
             f"{history_block}\n\n"
             f"User message:\n{message}"
@@ -98,6 +103,44 @@ class OpenAIProvider:
             return generate_grounded_response(message, mode, memory_block, guidance_block)
 
         return generate_grounded_response(message, mode, memory_block, guidance_block)
+
+    def extract_profile_facts(self, message: str) -> list[ExtractedProfileFact]:
+        if not self.enabled:
+            return []
+
+        prompt = (
+            "Extract useful personal facts for a mental fitness support app. Return JSON only.\n"
+            "Allowed fact_type values: name, relationship, workplace, location, date, belief, health_context, habit, timezone.\n"
+            "Allowed sensitivity values: normal, personal, health.\n"
+            "Capture habits like gym/biking routines and health context like recurring sneezing, but do not diagnose.\n"
+            "Do not capture secrets, payment data, government IDs, full addresses, or random one-off details.\n"
+            "Use short user-stated values. Include ttl_days and confidence.\n"
+            "Return {\"facts\":[]} if nothing useful.\n\n"
+            f"Message:\n{message}"
+        )
+        try:
+            responses = getattr(self.client, "responses", None)
+            if responses is not None:
+                response = responses.create(
+                    model=self.settings.openai_chat_model,
+                    instructions="Return strict JSON only. No prose.",
+                    input=prompt,
+                    store=False,
+                )
+                output_text = getattr(response, "output_text", None)
+            else:
+                completion = self.client.chat.completions.create(
+                    model=self.settings.openai_chat_model,
+                    messages=[
+                        {"role": "system", "content": "Return strict JSON only. No prose."},
+                        {"role": "user", "content": prompt},
+                    ],
+                )
+                output_text = completion.choices[0].message.content
+            payload = json.loads(output_text or "{}")
+            return profile_facts_from_ai_payload(payload.get("facts", []))
+        except Exception:
+            return []
 
     def embed_text(self, text: str) -> list[float]:
         if not self.enabled:

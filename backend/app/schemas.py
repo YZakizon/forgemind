@@ -97,6 +97,20 @@ class RankedMemory(MemoryCandidate):
     final_score: float
 
 
+class ProfileFact(BaseModel):
+    id: str
+    user_id: str
+    fact_type: str
+    label: str
+    value: str
+    sensitivity: str = "normal"
+    source: str = "chat"
+    confidence: float = Field(ge=0, le=1)
+    created_at: datetime
+    updated_at: datetime
+    expires_at: datetime
+
+
 class GuidanceRule(BaseModel):
     id: str
     topic: str
@@ -195,6 +209,7 @@ class ProgressSummary(BaseModel):
 class UserDataExport(BaseModel):
     user_id: str
     memories: list[MemoryCandidate] = []
+    profile_facts: list[ProfileFact] = []
     mood_checkins: list[MoodCheckin] = []
     reset_sessions: list[ResetSession] = []
     chat_messages: list[dict[str, str | None]] = []
