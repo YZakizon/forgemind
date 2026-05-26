@@ -482,8 +482,6 @@ export function TalkScreen() {
           voiceTurnInFlightRef.current = false;
           scheduleVoiceSocketInactivityClose();
         });
-        setTranscribing(false);
-        setSending(false);
         return;
       }
       ForgeMindAudioRecorder.cancel().catch(() => undefined);
@@ -493,8 +491,10 @@ export function TalkScreen() {
         voiceTurnInFlightRef.current = false;
       }
     }
-    setTranscribing(false);
-    setSending(false);
+    if (!finishVoiceTurn || !voiceTurnInFlightRef.current) {
+      setTranscribing(false);
+      setSending(false);
+    }
     stoppingRef.current = false;
     startedAtRef.current = null;
     chunkRotatingRef.current = false;
