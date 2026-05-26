@@ -62,6 +62,7 @@ const voicePreferredSegmentMaxMs = 8_000;
 const voiceMaxSegmentMs = 12_000;
 const voiceAmplitudeThreshold = 900;
 const checkinTimeoutMs = 11_000;
+const voiceSocketInactivityMs = 30_000;
 
 type TalkMessage = {
   id: string;
@@ -355,6 +356,8 @@ export function TalkScreen() {
   const speechQueueRef = useRef(Promise.resolve());
   const speechQueueTokenRef = useRef(0);
   const voiceSocketRef = useRef<WebSocket | null>(null);
+  const voiceSocketInactivityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const talkFocusedRef = useRef(true);
   const chunkIndexRef = useRef(0);
   const chunkStartedAtRef = useRef<number | null>(null);
   const lastVoiceAtRef = useRef<number | null>(null);
@@ -451,6 +454,40 @@ export function TalkScreen() {
     speechQueueRef.current = Promise.resolve();
   }
 
+  function clearVoiceSocketInactivityTimer() {
+    if (voiceSocketInactivityTimerRef.current) {
+      clearTimeout(voiceSocketInactivityTimerRef.current);
+      voiceSocketInactivityTimerRef.current = null;
+    }
+  }
+
+  function scheduleVoiceSocketInactivityClose() {
+    clearVoiceSocketInactivityTimer();
+    const socket = voiceSocketRef.current;
+    if (!socket || socket.readyState === WebSocket.CLOSING || socket.readyState === WebSocket.CLOSED) return;
+    voiceSocketInactivityTimerRef.current = setTimeout(() => {
+      voiceSocketInactivityTimerRef.current = null;
+      voiceSocketRef.current?.close();
+      voiceSocketRef.current = null;
+    }, voiceSocketInactivityMs);
+  }
+
+  function stopLocalTalkActivity() {
+    stopReadAloud();
+    clearVoiceTimers();
+    if (recordingRef.current && ForgeMindAudioRecorder) {
+      ForgeMindAudioRecorder.cancel().catch(() => undefined);
+      recordingRef.current = false;
+      setVoiceRecording(false);
+    }
+    setTranscribing(false);
+    setSending(false);
+    stoppingRef.current = false;
+    startedAtRef.current = null;
+    chunkRotatingRef.current = false;
+    pendingChunkUploadsRef.current = 0;
+  }
+
   function toggleForgeSpeech(messageId: string, text: string) {
     if (speakingMessageId === messageId) {
       stopReadAloud();
@@ -460,15 +497,10 @@ export function TalkScreen() {
   }
 
   const leaveTalk = useCallback(() => {
-    stopReadAloud();
-    if (recordingRef.current && ForgeMindAudioRecorder) {
-      ForgeMindAudioRecorder.cancel().catch(() => undefined);
-      recordingRef.current = false;
-      setVoiceRecording(false);
-    }
-    clearVoiceTimers();
+    stopLocalTalkActivity();
     voiceSocketRef.current?.close();
     voiceSocketRef.current = null;
+    clearVoiceSocketInactivityTimer();
 
     if (navigation.canGoBack()) {
       navigation.goBack();
@@ -540,6 +572,7 @@ export function TalkScreen() {
 
   function resetVoiceSessionState() {
     clearVoiceTimers();
+    clearVoiceSocketInactivityTimer();
     voiceSocketRef.current?.close();
     voiceSocketRef.current = null;
     pendingChunkUploadsRef.current = 0;
@@ -594,6 +627,7 @@ export function TalkScreen() {
         clearTimeout(speechTimerRef.current);
       }
       clearVoiceTimers();
+      clearVoiceSocketInactivityTimer();
       voiceSocketRef.current?.close();
       if (recordingRef.current && ForgeMindAudioRecorder) {
         ForgeMindAudioRecorder.cancel().catch(() => undefined);
@@ -607,32 +641,21 @@ export function TalkScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      talkFocusedRef.current = true;
+      clearVoiceSocketInactivityTimer();
       const timer = setInterval(() => setChatClock(Date.now()), 1_000);
-      return () => clearInterval(timer);
+      return () => {
+        clearInterval(timer);
+        talkFocusedRef.current = false;
+      };
     }, [])
   );
 
   useFocusEffect(
     useCallback(() => {
       return () => {
-        if (speechTimerRef.current) {
-          clearTimeout(speechTimerRef.current);
-          speechTimerRef.current = null;
-        }
-        setSpeakingMessageId(null);
-        ForgeMindTts?.stop?.().catch(() => undefined);
-        speechQueueTokenRef.current += 1;
-        speechQueueRef.current = Promise.resolve();
-        clearVoiceTimers();
-        voiceSocketRef.current?.close();
-        voiceSocketRef.current = null;
-        if (recordingRef.current && ForgeMindAudioRecorder) {
-          ForgeMindAudioRecorder.cancel().catch(() => undefined);
-          recordingRef.current = false;
-          setVoiceRecording(false);
-        }
-        setTranscribing(false);
-        setSending(false);
+        stopLocalTalkActivity();
+        scheduleVoiceSocketInactivityClose();
       };
     }, [])
   );
@@ -676,6 +699,7 @@ export function TalkScreen() {
 
   async function startVoiceMessage() {
     if (sending || recordingRef.current) return;
+    clearVoiceSocketInactivityTimer();
     stopReadAloud();
     setError(null);
     if (!ForgeMindAudioRecorder) {
@@ -709,22 +733,26 @@ export function TalkScreen() {
       if (!socket || socket.readyState === WebSocket.CLOSING || socket.readyState === WebSocket.CLOSED) {
         socket = createVoiceWebSocket();
         voiceSocketRef.current = socket;
-        socket.onopen = () => {
-          socket?.send(JSON.stringify(startPayload));
-        };
-        socket.onmessage = (event) => handleVoiceSocketMessage(event.data);
-        socket.onerror = () => {
+      }
+      socket.onopen = () => {
+        socket?.send(JSON.stringify(startPayload));
+      };
+      socket.onmessage = (event) => handleVoiceSocketMessage(event.data);
+      socket.onerror = () => {
+        if (talkFocusedRef.current) {
           setError("Voice is unable to connect. Please try again.");
-        };
-        socket.onclose = () => {
-          if (recordingRef.current) {
-            setError("Voice connection closed. Tap again to retry.");
-          }
-        };
-      } else if (socket.readyState === WebSocket.OPEN) {
-        socket.send(
-          JSON.stringify(startPayload)
-        );
+        }
+      };
+      socket.onclose = () => {
+        if (voiceSocketRef.current === socket) {
+          voiceSocketRef.current = null;
+        }
+        if (recordingRef.current && talkFocusedRef.current) {
+          setError("Voice connection closed. Tap again to retry.");
+        }
+      };
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify(startPayload));
       }
 
       await ForgeMindAudioRecorder.cancel().catch(() => undefined);
@@ -740,6 +768,7 @@ export function TalkScreen() {
       }, maxVoiceRecordingMs);
     } catch (voiceError) {
       clearVoiceTimers();
+      clearVoiceSocketInactivityTimer();
       voiceSocketRef.current?.close();
       voiceSocketRef.current = null;
       recordingRef.current = false;
@@ -759,6 +788,7 @@ export function TalkScreen() {
     }
 
     if (message.type === "error") {
+      if (!talkFocusedRef.current) return;
       setError(voiceErrorMessage(new Error(message.detail || "Voice chat failed")));
       setTranscribing(false);
       setSending(false);
@@ -797,7 +827,9 @@ export function TalkScreen() {
       const audioKey = `${message.part}-${chunkIndex}-${text}`;
       if (queuedTtsAudioKeysRef.current.has(audioKey)) return;
       queuedTtsAudioKeysRef.current.add(audioKey);
-      queueForgeAudio(messageId, text, message.audio_base64, message.format || "mp3", audioKey);
+      if (talkFocusedRef.current) {
+        queueForgeAudio(messageId, text, message.audio_base64, message.format || "mp3", audioKey);
+      }
       return;
     }
 
