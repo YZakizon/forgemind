@@ -5,7 +5,7 @@ def generate_grounded_response(message: str, mode: str, memory_block: str, guida
     lowered = message.lower()
     if "angry" in lowered or "rage" in lowered:
         return (
-            "That sounds like a lot of heat in your system right now. Before you respond or make a move, "
+            "There is a lot of heat in your system right now. Before you respond or make a move, "
             "give yourself ten minutes away from the trigger if you can. What is the one thing you need to not do tonight?"
         )
     if "sleep" in lowered or mode == "night_support":
@@ -15,11 +15,11 @@ def generate_grounded_response(message: str, mode: str, memory_block: str, guida
         )
     if "breakup" in lowered or "ex" in lowered:
         return (
-            "That kind of pain can make everything feel urgent. A safer move is to slow the next decision down. "
+            "Breakup pain can make everything feel urgent. A safer move is to slow the next decision down. "
             "What are you tempted to do right now that you might regret tomorrow?"
         )
     return (
-        "That sounds heavy. Let’s slow it down and separate the facts from the pressure around them. "
+        "Let’s slow this down and separate the facts from the pressure around them. "
         "What is taking the most energy right now?"
     )
 

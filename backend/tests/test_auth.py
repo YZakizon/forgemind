@@ -41,8 +41,45 @@ def test_production_apple_auth_requires_audience(monkeypatch):
 
 def test_production_auth_fails_closed_when_configured(monkeypatch):
     override_settings(monkeypatch, environment="production", google_auth_audience="forgemind")
-    with pytest.raises(ValueError, match="not implemented"):
+    with pytest.raises(ValueError, match="invalid"):
         verify_identity_token(AuthProvider.google, "valid-token")
+
+
+def test_production_google_auth_verifies_oidc_subject(monkeypatch):
+    override_settings(monkeypatch, environment="production", google_auth_audience="forgemind")
+    monkeypatch.setattr(
+        "app.services.auth._decode_oidc_token",
+        lambda **_: {"sub": "google-user", "iss": "https://accounts.google.com"},
+    )
+
+    first = verify_identity_token(AuthProvider.google, "valid-token")
+    second = verify_identity_token(AuthProvider.google, "valid-token")
+
+    assert first == second
+    assert first != DEMO_USER_ID
+
+
+def test_production_google_auth_rejects_wrong_issuer(monkeypatch):
+    override_settings(monkeypatch, environment="production", google_auth_audience="forgemind")
+    monkeypatch.setattr(
+        "app.services.auth._decode_oidc_token",
+        lambda **_: {"sub": "google-user", "iss": "https://evil.example"},
+    )
+
+    with pytest.raises(ValueError, match="issuer"):
+        verify_identity_token(AuthProvider.google, "valid-token")
+
+
+def test_production_apple_auth_verifies_oidc_subject(monkeypatch):
+    override_settings(monkeypatch, environment="production", apple_auth_audience="com.forgemind.app")
+    monkeypatch.setattr(
+        "app.services.auth._decode_oidc_token",
+        lambda **_: {"sub": "apple-user", "iss": "https://appleid.apple.com"},
+    )
+
+    user_id = verify_identity_token(AuthProvider.apple, "valid-token")
+
+    assert user_id != DEMO_USER_ID
 
 
 def test_access_token_is_issued():

@@ -41,15 +41,26 @@ class ChatRequest(BaseModel):
     user_id: str
     message: str = Field(min_length=1, max_length=4000)
     mode: str = "think_clearly"
+    history: list[dict[str, str]] = Field(default_factory=list)
+
+
+class ChatResponseParts(BaseModel):
+    body: str
+    question: str | None = None
 
 
 class ChatResponse(BaseModel):
     response: str
+    response_parts: ChatResponseParts | None = None
     safety_level: SafetyLevel
     memories_used: list[str] = []
     guidance_topics: list[str] = []
     transcript: str | None = None
     persisted: bool = False
+
+
+class SpeechRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
 
 
 class MemoryCandidate(BaseModel):
@@ -110,6 +121,7 @@ class SubscriptionValidationRequest(BaseModel):
     user_id: str
     platform: str
     receipt_or_purchase_token: str
+    product_id: str | None = None
 
 
 class SubscriptionValidationResponse(BaseModel):

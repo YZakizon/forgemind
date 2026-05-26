@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime
 
 from app.main import progress_summary
@@ -16,7 +17,7 @@ def checkin(label: str) -> MoodCheckin:
 
 
 def test_progress_summary_falls_back_when_store_unavailable():
-    summary = progress_summary("user-1")
+    summary = asyncio.run(progress_summary("user-1"))
     assert summary.user_id == "user-1"
     assert summary.themes == []
 

@@ -26,7 +26,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 For LAN testing with a phone, use your machine's `192.168.0.106` address as the public backend/admin host.
 The backend listener defaults to `0.0.0.0` so both LAN access and Android USB reverse can reach it.
-For a USB-connected Android demo, `make android-tunnel` forwards both Metro `8085` and backend `8005`, and the mobile app calls `http://127.0.0.1:8005`.
+For a USB-connected Android demo, `make android-tunnel` forwards both Metro `8085` and backend `8005`, and `make android-install-usb` builds the mobile app against `http://127.0.0.1:8005`.
 Set `API_BASE_URL` in `mobile/.env.local`, root `.env.local`, or the shell when the mobile app should call a different backend URL. Reinstall the Android app after changing it because the value is compiled into native build config.
 The root `.env` is the highest-priority local development file. Service-local files such as `backend/.env.local`, `admin/.env.local`, and `mobile/.env.local` can exist, but duplicate keys in root `.env` win.
 
@@ -34,13 +34,14 @@ The root `.env` is the highest-priority local development file. Service-local fi
 make backend BACKEND_BIND_HOST=0.0.0.0 BACKEND_HOST=192.168.0.106
 make frontend ADMIN_HOST=192.168.0.106
 make mobile
-make android-install API_BASE_URL=http://192.168.0.106:8005
+make android-install
 ```
 
 Default app ports:
 
+- Postgres host port: `5435`
 - Backend: `8005`
-- Admin: `3005`
+- Admin: `3008`
 - React Native Metro: `8085`
 
 Separate test server ports are above `20000`:
@@ -73,7 +74,7 @@ npm install
 npm run dev
 ```
 
-The admin dashboard runs on `http://192.168.0.106:3005` when started through `make frontend`.
+The admin dashboard runs on `http://192.168.0.106:3008` when started through `make frontend`.
 
 Run mobile:
 
@@ -84,8 +85,22 @@ npm run start -- --host 0.0.0.0 --port 8085
 npm run android -- --port 8085
 ```
 
-Metro runs on port `8085`. `make android-install` runs the USB tunnel before installing the app.
+Metro runs on port `8085`. Use `make android-install` for LAN installs that keep working after unplugging USB. Use `make android-install-usb` only when you want the app to depend on Android USB reverse.
 The mobile UI uses React Navigation bottom tabs and mock preview state for Home, Talk, Tap-to-Talk Voice, Reset, Progress, Profile, mode selection, and voice-state cards. For LAN testing, rebuild/reinstall the Android app after changing `API_BASE_URL`.
+
+## AI Voice Providers
+
+Chat and embeddings use OpenAI by default. STT uses OpenAI by default. TTS can use OpenAI or Deepgram:
+
+```bash
+TTS_PROVIDER=deepgram
+DEEPGRAM_API_KEY=...
+DEEPGRAM_TTS_MODEL=aura-2-thalia-en
+DEEPGRAM_TTS_ENCODING=mp3
+DEEPGRAM_TTS_SPEED=1.0
+```
+
+The mobile app still calls the backend `/speech` endpoint. The backend chooses the provider, so changing TTS provider or voice only requires a backend restart.
 
 ## API Highlights
 
@@ -94,6 +109,8 @@ The mobile UI uses React Navigation bottom tabs and mock preview state for Home,
 - `GET /auth/me`
 - `POST /chat`
 - `POST /voice-chat`
+- `POST /voice-transcribe`
+- `POST /speech`
 - `POST /safety/classify`
 - `GET/POST/PUT/DELETE /guidance/rules`
 - `GET /memories`
@@ -135,15 +152,37 @@ Profile privacy rows call backend data controls. Memory controls archive active 
 
 ## AI and Voice
 
-`/chat` uses the OpenAI provider when `OPENAI_API_KEY` is set, with local fallback responses when it is not. `/voice-chat` accepts an uploaded audio file, transcribes it through the configured OpenAI transcription model, then routes the transcript through the same chat, safety, guidance, and memory flow. The Android app includes a native recorder module for `.m4a` voice capture.
+`/chat` uses the OpenAI provider when `OPENAI_API_KEY` is set, with local fallback responses when it is not. `/voice/ws` accepts WebSocket `.m4a` voice segments, sends each segment to STT, stores timestamped transcript segments for the active voice session, merges and deduplicates overlapping text, then routes the final transcript through the same chat, safety, guidance, and memory flow. `/voice-chat` and `/voice-transcribe` remain available as POST fallbacks. `/speech` uses the configured backend TTS provider to synthesize Forge responses as audio. The Android app includes a native recorder module for `.m4a` voice capture and asks the backend for AI speech before falling back to device text-to-speech.
+
+Voice segmentation targets:
+
+- VAD silence threshold: 1.0 second
+- Preferred segment length: 3-8 seconds
+- Max segment length: 10-12 seconds
+- Pre-roll target: 300-500 ms
+- Post-roll target: 700-1200 ms
+- Overlap target: 500-1000 ms
+- Format: mono AAC `.m4a`
+
+The current Android recorder can rotate valid `.m4a` chunks and send segment timestamps. True pre-roll and overlap require replacing `MediaRecorder` chunk rotation with an `AudioRecord` ring buffer and AAC/M4A segment encoder.
+
+Default provider settings:
+
+- `AI_PROVIDER=openai`
+- `STT_PROVIDER=openai`
+- `TTS_PROVIDER=openai`
+- `OPENAI_STT_MODEL=whisper-1`
+- `OPENAI_TTS_MODEL=gpt-4o-mini-tts`
+- `OPENAI_TTS_VOICE=cedar`
+- `OPENAI_TTS_RESPONSE_FORMAT=aac`
 
 ## Credential TODOs
 
 - Set `GOOGLE_AUTH_AUDIENCE` for production Google identity-token verification.
-- Set `APPLE_AUTH_AUDIENCE` and `APPLE_AUTH_ISSUER` for production Apple identity-token verification.
-- Set `STOREKIT_ISSUER_ID`, `STOREKIT_KEY_ID`, and `STOREKIT_PRIVATE_KEY` before implementing production StoreKit validation.
+- Set `APPLE_AUTH_AUDIENCE` and `APPLE_AUTH_ISSUER` for production Apple identity-token verification. `APPLE_AUTH_AUDIENCE` is also used as the StoreKit bundle id.
+- Set `STOREKIT_ISSUER_ID`, `STOREKIT_KEY_ID`, `STOREKIT_PRIVATE_KEY`, and `STOREKIT_ROOT_CA_PEM` before enabling production StoreKit validation.
 - Set `GOOGLE_PLAY_PACKAGE_NAME` and `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON` before implementing production Play Billing validation.
-- Add `OPENAI_API_KEY` for AI responses, embeddings, and voice transcription.
+- Add `OPENAI_API_KEY` for AI responses, embeddings, voice transcription, and backend text-to-speech.
 - Add `SENTRY_DSN` and `POSTHOG_API_KEY` for production observability.
 
 ## MVP Boundaries

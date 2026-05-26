@@ -190,18 +190,27 @@ final_score =
 
 # Voice Architecture
 
-MVP voice mode:
-- Tap-to-Talk
-- AAC .m4a uploads
-- POST API requests
+Production voice mode:
+- WebSocket transport
+- continuous mobile recording
+- mobile VAD
+- speech segments encoded as AAC `.m4a`
+- 1.0 second silence threshold
+- preferred segments of 3-8 seconds
+- max segments of 10-12 seconds
+- target pre-roll of 300-500 ms
+- target post-roll of 700-1200 ms
+- target overlap of 500-1000 ms
 
-No realtime streaming in MVP.
+WebSocket is the active voice architecture, not a future/MVP-later item.
+Do not describe current Talk voice as POST-only Tap-to-Talk MVP.
+POST voice endpoints may remain only as compatibility/fallback paths.
 
-Realtime voice later:
-- WebSocket
-- turn detection
-- interruption support
-- streaming audio
+Backend voice flow:
+- send each segment to STT
+- store transcript text with segment timestamps for the active session
+- merge and deduplicate overlapping text
+- optionally clean punctuation after the full paragraph is merged
 
 Audio format:
 - AAC

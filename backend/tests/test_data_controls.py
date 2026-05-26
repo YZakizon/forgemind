@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from fastapi import HTTPException
 
@@ -13,7 +15,7 @@ def bearer(user_id: str = DEMO_USER_ID) -> dict[str, str]:
 
 def test_data_controls_require_authentication():
     with pytest.raises(HTTPException) as exc:
-        export_user_data(DEMO_USER_ID, authorization=None)
+        asyncio.run(export_user_data(DEMO_USER_ID, authorization=None))
     assert exc.value.status_code == 401
 
 
@@ -25,7 +27,7 @@ def test_data_controls_reject_mismatched_user(monkeypatch):
 
     other_user = "00000000-0000-4000-8000-000000000002"
     with pytest.raises(HTTPException) as exc:
-        export_user_data(DEMO_USER_ID, authorization=bearer(other_user)["Authorization"])
+        asyncio.run(export_user_data(DEMO_USER_ID, authorization=bearer(other_user)["Authorization"]))
 
     assert exc.value.status_code == 403
 
@@ -37,7 +39,7 @@ def test_data_controls_allow_matching_token(monkeypatch):
 
     monkeypatch.setattr(store, "archive_user_memories", fake_archive)
 
-    response = archive_memories(DEMO_USER_ID, authorization=bearer()["Authorization"])
+    response = asyncio.run(archive_memories(DEMO_USER_ID, authorization=bearer()["Authorization"]))
 
     assert isinstance(response, DataControlResponse)
     assert response.detail == "Archived 2 active memories."
@@ -49,6 +51,6 @@ def test_demo_login_issues_demo_user_token(monkeypatch):
 
     monkeypatch.setattr(store, "upsert_user", fake_upsert_user)
 
-    response = login(AuthRequest(provider=AuthProvider.google, identity_token="demo-token"))
+    response = asyncio.run(login(AuthRequest(provider=AuthProvider.google, identity_token="demo-token")))
 
     assert response.user_id == DEMO_USER_ID
