@@ -63,6 +63,13 @@ const voiceMaxSegmentMs = 12_000;
 const voiceAmplitudeThreshold = 900;
 const checkinTimeoutMs = 11_000;
 
+type TalkMessage = {
+  id: string;
+  role: "forge" | "user";
+  text: string;
+  createdAt: number;
+};
+
 function toggleSelection(values: string[], value: string) {
   return values.includes(value) ? values.filter((item) => item !== value) : [...values, value];
 }
@@ -327,7 +334,7 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
 }
 
 export function TalkScreen() {
-  const initialForgeMessage = { id: "m1", role: "forge" as const, text: "What can I help you with right now?" };
+  const initialForgeMessage = { id: "m1", role: "forge" as const, text: "What can I help you with right now?", createdAt: Date.now() };
   const [mode, setMode] = useState<Mode>("Clarity");
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
@@ -363,7 +370,8 @@ export function TalkScreen() {
   });
   const queuedTtsAudioKeysRef = useRef<Set<string>>(new Set());
   const suggestionRequestIdRef = useRef(0);
-  const [messages, setMessages] = useState<Array<{ id: string; role: "forge" | "user"; text: string }>>([initialForgeMessage]);
+  const [messages, setMessages] = useState<TalkMessage[]>([initialForgeMessage]);
+  const [chatClock, setChatClock] = useState(Date.now());
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const conversationStarted = messages.some((message) => message.role === "user");
 
@@ -387,7 +395,7 @@ export function TalkScreen() {
     setError(null);
     suggestionRequestIdRef.current += 1;
     setSuggestions([]);
-    setMessages([{ ...initialForgeMessage, id: `m1-${Date.now()}` }]);
+    setMessages([{ ...initialForgeMessage, id: `m1-${Date.now()}`, createdAt: Date.now() }]);
   }
 
   async function updateSuggestionsFromConversation(response: string, userMessage: string, history: ChatHistoryItem[] = buildChatHistory(messages)) {
@@ -556,11 +564,11 @@ export function TalkScreen() {
     suggestionRequestIdRef.current += 1;
     setSuggestions([]);
     setSending(true);
-    setMessages((current) => [...current, { id: `user-${Date.now()}`, role: "user", text: trimmed }]);
+    setMessages((current) => [...current, { id: `user-${Date.now()}`, role: "user", text: trimmed, createdAt: Date.now() }]);
     try {
       const result = await sendChatMessage(trimmed, mode, history);
       const messageId = `forge-${Date.now()}`;
-      setMessages((current) => [...current, { id: messageId, role: "forge", text: result.response }]);
+      setMessages((current) => [...current, { id: messageId, role: "forge", text: result.response, createdAt: Date.now() }]);
       updateSuggestionsFromConversation(result.response, trimmed, [
         ...history,
         { role: "user", text: trimmed },
@@ -577,7 +585,7 @@ export function TalkScreen() {
   }
 
   function appendVoiceTranscript(transcript: string) {
-    setMessages((current) => [...current, { id: `voice-${Date.now()}`, role: "user", text: transcript }]);
+    setMessages((current) => [...current, { id: `voice-${Date.now()}`, role: "user", text: transcript, createdAt: Date.now() }]);
   }
 
   useEffect(() => {
@@ -591,6 +599,11 @@ export function TalkScreen() {
         ForgeMindAudioRecorder.cancel().catch(() => undefined);
       }
     };
+  }, []);
+
+  useEffect(() => {
+    const timer = setInterval(() => setChatClock(Date.now()), 60_000);
+    return () => clearInterval(timer);
   }, []);
 
   useEffect(() => {
@@ -767,7 +780,7 @@ export function TalkScreen() {
       if (messageId) {
         setMessages((current) => current.map((item) => (item.id === messageId ? { ...item, text: result.response } : item)));
       } else {
-        setMessages((current) => [...current, { id: `forge-${Date.now()}`, role: "forge", text: result.response }]);
+        setMessages((current) => [...current, { id: `forge-${Date.now()}`, role: "forge", text: result.response, createdAt: Date.now() }]);
       }
       updateSuggestionsFromConversation(result.response, voiceTranscriptRef.current, [
         ...buildChatHistory(messages),
@@ -796,7 +809,7 @@ export function TalkScreen() {
     setMessages((current) => {
       const exists = current.some((item) => item.id === messageId);
       if (!exists) {
-        return [...current, { id: messageId, role: "forge", text }];
+        return [...current, { id: messageId, role: "forge", text, createdAt: Date.now() }];
       }
       return current.map((item) => (item.id === messageId ? { ...item, text } : item));
     });
@@ -1001,6 +1014,7 @@ export function TalkScreen() {
                 key={message.id}
                 role={message.role}
                 subtitle={message.role === "forge" ? "Forge" : "You"}
+                timestamp={humanizeChatDate(message.createdAt, chatClock)}
                 speaking={message.id === speakingMessageId}
                 onSpeak={message.role === "forge" && conversationStarted ? () => toggleForgeSpeech(message.id, message.text) : undefined}
               >
@@ -1127,6 +1141,22 @@ function buildChatHistory(messages: Array<{ role: "forge" | "user"; text: string
   return messages
     .filter((message) => message.text.trim())
     .map((message) => ({ role: message.role, text: message.text }));
+}
+
+function humanizeChatDate(timestamp: number, now = Date.now()) {
+  const elapsedMs = Math.max(0, now - timestamp);
+  const elapsedMinutes = Math.floor(elapsedMs / 60_000);
+  if (elapsedMinutes < 1) return "Just now";
+  if (elapsedMinutes < 60) return `${elapsedMinutes} min ago`;
+
+  const date = new Date(timestamp);
+  const today = new Date(now);
+  const yesterday = new Date(now);
+  yesterday.setDate(today.getDate() - 1);
+  const time = date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  if (date.toDateString() === today.toDateString()) return time;
+  if (date.toDateString() === yesterday.toDateString()) return `Yesterday ${time}`;
+  return date.toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
 function responseSpeechSegments(response: ForgeChatResponse) {

@@ -391,16 +391,19 @@ export function ChatBubble({
   role,
   children,
   subtitle,
+  timestamp,
   speaking = false,
   onSpeak
 }: {
   role: "forge" | "user";
   children: React.ReactNode;
   subtitle?: string;
+  timestamp?: string;
   speaking?: boolean;
   onSpeak?: () => void;
 }) {
   const isForge = role === "forge";
+  const footer = [subtitle, timestamp].filter(Boolean).join(" • ");
   return (
     <View style={[styles.chatBubble, isForge ? styles.forgeBubble : styles.userBubble]}>
       <View style={styles.chatLine}>
@@ -414,7 +417,7 @@ export function ChatBubble({
           </View>
         ) : null}
       </View>
-      {subtitle ? <Text style={[styles.chatSubtitle, role === "user" && styles.userChatSubtitle]}>{subtitle}</Text> : null}
+      {footer ? <Text style={[styles.chatSubtitle, role === "user" && styles.userChatSubtitle]}>{footer}</Text> : null}
     </View>
   );
 }
