@@ -30,8 +30,10 @@ class FakeResult:
 
 
 class FakeSession:
-    def __init__(self):
+    def __init__(self, rows=None):
+        self.rows = rows or []
         self.statements: list[str] = []
+        self.params_history: list[dict] = []
         self.committed = False
 
     async def __aenter__(self):
@@ -43,7 +45,8 @@ class FakeSession:
     async def execute(self, statement, params):
         self.statements.append(str(statement))
         self.params = params
-        return FakeResult()
+        self.params_history.append(params)
+        return FakeResult(self.rows)
 
     async def commit(self):
         self.committed = True
@@ -214,3 +217,25 @@ def test_profile_fact_row_decrypts_encrypted_value():
     )
 
     assert fact.value == "bikes every weekend"
+
+
+def test_backfill_encrypts_plaintext_profile_facts(monkeypatch):
+    user_id = "00000000-0000-4000-8000-000000000001"
+    rows = [{"id": "fact-1", "user_id": user_id, "value": "bikes every weekend"}]
+    select_session = FakeSession(rows)
+    update_session = FakeSession()
+    sessions = [select_session, update_session]
+
+    async def fake_dek(selected_user_id: str):
+        assert selected_user_id == user_id
+        return b"2" * 32, "test-v1"
+
+    monkeypatch.setattr(store, "get_or_create_user_dek", fake_dek)
+    monkeypatch.setattr(store, "get_sessionmaker", lambda: lambda: sessions.pop(0))
+
+    count = asyncio.run(store._backfill_profile_fact_values(limit=10))
+
+    assert count == 1
+    assert "UPDATE profile_facts" in update_session.statements[0]
+    assert update_session.params["value_hash"]
+    assert update_session.params["ciphertext"] != b"bikes every weekend"

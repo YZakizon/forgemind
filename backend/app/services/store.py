@@ -373,6 +373,108 @@ async def get_or_create_user_dek(user_id: str) -> tuple[bytes, str]:
     return unwrap_dek(_bytes(row["wrapped_dek"]), _bytes(row["wrap_nonce"]), user_id, row["wrap_key_id"]), row["wrap_key_id"]
 
 
+async def backfill_encrypted_sensitive_text(limit: int = 500) -> dict[str, int]:
+    memory_count = await _backfill_memory_content(limit)
+    profile_fact_count = await _backfill_profile_fact_values(limit)
+    return {"memories": memory_count, "profile_facts": profile_fact_count}
+
+
+async def _backfill_memory_content(limit: int) -> int:
+    sessionmaker = get_sessionmaker()
+    async with sessionmaker() as session:
+        rows = list((
+            await session.execute(
+                text(
+                    """
+                    SELECT id, user_id, content
+                    FROM memories
+                    WHERE content_ciphertext IS NULL AND content <> ''
+                    ORDER BY created_at ASC
+                    LIMIT :limit
+                    """
+                ),
+                {"limit": limit},
+            )
+        ).mappings())
+
+    for row in rows:
+        user_id = str(row["user_id"])
+        dek, key_id = await get_or_create_user_dek(user_id)
+        encrypted = encrypt_text_for_user(user_id, "memories", "content", row["content"], dek, key_id)
+        async with sessionmaker() as session:
+            await session.execute(
+                text(
+                    """
+                    UPDATE memories
+                    SET content = '',
+                        content_ciphertext = :ciphertext,
+                        content_nonce = :nonce,
+                        content_key_id = :key_id,
+                        content_hash = :content_hash,
+                        updated_at = now()
+                    WHERE id = :id AND content_ciphertext IS NULL
+                    """
+                ),
+                {
+                    "id": row["id"],
+                    "ciphertext": encrypted.ciphertext,
+                    "nonce": encrypted.nonce,
+                    "key_id": encrypted.key_id,
+                    "content_hash": encrypted.value_hash,
+                },
+            )
+            await session.commit()
+    return len(rows)
+
+
+async def _backfill_profile_fact_values(limit: int) -> int:
+    sessionmaker = get_sessionmaker()
+    async with sessionmaker() as session:
+        rows = list((
+            await session.execute(
+                text(
+                    """
+                    SELECT id, user_id, value
+                    FROM profile_facts
+                    WHERE value_ciphertext IS NULL AND value <> ''
+                    ORDER BY created_at ASC
+                    LIMIT :limit
+                    """
+                ),
+                {"limit": limit},
+            )
+        ).mappings())
+
+    for row in rows:
+        user_id = str(row["user_id"])
+        dek, key_id = await get_or_create_user_dek(user_id)
+        encrypted = encrypt_text_for_user(user_id, "profile_facts", "value", row["value"], dek, key_id)
+        async with sessionmaker() as session:
+            await session.execute(
+                text(
+                    """
+                    UPDATE profile_facts
+                    SET value = '',
+                        value_ciphertext = :ciphertext,
+                        value_nonce = :nonce,
+                        value_key_id = :key_id,
+                        value_hash = :value_hash,
+                        updated_at = now()
+                    WHERE id = :id AND value_ciphertext IS NULL
+                    """
+                ),
+                {
+                    "id": row["id"],
+                    "ciphertext": encrypted.ciphertext,
+                    "nonce": encrypted.nonce,
+                    "key_id": encrypted.key_id,
+                    "value_hash": encrypted.value_hash,
+                },
+            )
+            await session.commit()
+    return len(rows)
+
+
 async def purge_expired_profile_facts(user_id: str | None = None) -> int:
     sessionmaker = get_sessionmaker()
     async with sessionmaker() as session:
