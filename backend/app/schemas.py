@@ -59,6 +59,18 @@ class ChatResponse(BaseModel):
     persisted: bool = False
 
 
+class ReplySuggestionsRequest(BaseModel):
+    user_id: str
+    user_message: str = Field(min_length=1, max_length=4000)
+    forge_message: str = Field(min_length=1, max_length=4000)
+    mode: str = "think_clearly"
+    history: list[dict[str, str]] = Field(default_factory=list)
+
+
+class ReplySuggestionsResponse(BaseModel):
+    suggestions: list[str] = Field(default_factory=list, max_length=3)
+
+
 class SpeechRequest(BaseModel):
     text: str = Field(min_length=1, max_length=4000)
 
@@ -83,6 +95,20 @@ class RankedMemory(MemoryCandidate):
     recency_score: float
     active_score: float
     final_score: float
+
+
+class ProfileFact(BaseModel):
+    id: str
+    user_id: str
+    fact_type: str
+    label: str
+    value: str
+    sensitivity: str = "normal"
+    source: str = "chat"
+    confidence: float = Field(ge=0, le=1)
+    created_at: datetime
+    updated_at: datetime
+    expires_at: datetime
 
 
 class GuidanceRule(BaseModel):
@@ -183,6 +209,7 @@ class ProgressSummary(BaseModel):
 class UserDataExport(BaseModel):
     user_id: str
     memories: list[MemoryCandidate] = []
+    profile_facts: list[ProfileFact] = []
     mood_checkins: list[MoodCheckin] = []
     reset_sessions: list[ResetSession] = []
     chat_messages: list[dict[str, str | None]] = []

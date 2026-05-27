@@ -29,6 +29,8 @@ from app.schemas import (
     ProgressSummary,
     ResetSession,
     ResetSessionCreate,
+    ReplySuggestionsRequest,
+    ReplySuggestionsResponse,
     SafetyEventListResponse,
     SafetyLevel,
     SpeechRequest,
@@ -40,6 +42,7 @@ from app.services.ai import validate_response_safety
 from app.services.auth import extract_bearer_token, issue_access_token, verify_access_token, verify_identity_token
 from app.services.guidance import DEFAULT_GUIDANCE_RULES, build_guidance_prompt_block, retrieve_guidance
 from app.services.memory import build_memory_prompt_block, extract_memory_candidates, filter_and_rank_memories
+from app.services.profile_facts import build_profile_facts_prompt_block, extract_profile_facts
 from app.services.openai_provider import OpenAIProvider
 from app.services.observability import capture_event, configure_observability
 from app.services import store
@@ -134,6 +137,18 @@ async def chat(payload: ChatRequest) -> ChatResponse:
     return await _chat_flow(payload)
 
 
+@app.post("/reply-suggestions", response_model=ReplySuggestionsResponse)
+async def reply_suggestions(payload: ReplySuggestionsRequest) -> ReplySuggestionsResponse:
+    provider = OpenAIProvider()
+    suggestions = provider.generate_reply_suggestions(
+        user_message=payload.user_message,
+        forge_message=payload.forge_message,
+        mode=payload.mode,
+        history=payload.history,
+    )
+    return ReplySuggestionsResponse(suggestions=suggestions[:3])
+
+
 @app.post("/chat/stream")
 async def chat_stream(payload: ChatRequest) -> StreamingResponse:
     async def events():
@@ -197,6 +212,12 @@ async def _chat_flow(payload: ChatRequest, transcript: str | None = None) -> Cha
 
     memories = filter_and_rank_memories(memory_candidates)
     memory_block = build_memory_prompt_block(memories)
+    profile_fact_block = build_profile_facts_prompt_block([])
+    if db_available:
+        try:
+            profile_fact_block = build_profile_facts_prompt_block(await store.list_user_profile_facts(payload.user_id))
+        except Exception:
+            logger.exception("profile fact retrieval failed", extra={"user_id": payload.user_id})
 
     db_guidance = list(guidance_rules.values())
     if db_available:
@@ -212,7 +233,7 @@ async def _chat_flow(payload: ChatRequest, transcript: str | None = None) -> Cha
     guidance_block = build_guidance_prompt_block(guidance)
 
     with AI_LATENCY.time():
-        response = provider.generate_response(payload.message, payload.mode, memory_block, guidance_block, payload.history)
+        response = provider.generate_response(payload.message, payload.mode, memory_block, guidance_block, profile_fact_block, payload.history)
     response_safety = validate_response_safety(response)
     if response_safety.value in {SafetyLevel.high.value, SafetyLevel.crisis.value}:
         raise HTTPException(status_code=500, detail="Generated response failed safety validation")
@@ -229,6 +250,9 @@ async def _chat_flow(payload: ChatRequest, transcript: str | None = None) -> Cha
         memory_contents = extract_memory_candidates(payload.message)
         memory_embeddings = {content: provider.embed_text(content) for content in memory_contents}
         await store.insert_memories(payload.user_id, memory_contents, memory_embeddings)
+        profile_facts = extract_profile_facts(payload.message)
+        profile_facts.extend(provider.extract_profile_facts(payload.message))
+        await store.insert_profile_facts(payload.user_id, profile_facts)
         persisted = True
         capture_event(
             "chat_completed",

@@ -48,6 +48,13 @@ class FakeSession:
         self.committed = True
 
 
+class MissingProfileFactsSession(FakeSession):
+    async def execute(self, statement, params):
+        self.statements.append(str(statement))
+        self.params = params
+        raise RuntimeError('UndefinedTableError: relation "profile_facts" does not exist')
+
+
 def test_subscription_validation_store_sql_is_complete(monkeypatch):
     session = FakeSession()
 
@@ -104,9 +111,68 @@ def test_delete_user_data_clears_user_owned_tables(monkeypatch):
         "mood_checkins",
         "subscriptions",
         "safety_events",
+        "profile_facts",
         "memories",
         "chat_messages",
         "chat_sessions",
     ]:
         assert f"DELETE FROM {table}" in joined
     assert session.committed
+
+
+def test_delete_user_data_skips_missing_profile_facts_table(monkeypatch):
+    class DeleteSession(FakeSession):
+        async def execute(self, statement, params):
+            statement_text = str(statement)
+            self.statements.append(statement_text)
+            self.params = params
+            if "DELETE FROM profile_facts" in statement_text:
+                raise RuntimeError('UndefinedTableError: relation "profile_facts" does not exist')
+            return FakeResult()
+
+    session = DeleteSession()
+    monkeypatch.setattr(store, "get_sessionmaker", lambda: lambda: session)
+
+    asyncio.run(store.delete_user_data("00000000-0000-4000-8000-000000000001"))
+
+    assert "DELETE FROM profile_facts" in "\n".join(session.statements)
+    assert session.committed
+
+
+def test_list_user_profile_facts_returns_empty_when_table_is_missing(monkeypatch):
+    session = MissingProfileFactsSession()
+    monkeypatch.setattr(store, "get_sessionmaker", lambda: lambda: session)
+
+    facts = asyncio.run(store.list_user_profile_facts("00000000-0000-4000-8000-000000000001"))
+
+    assert facts == []
+    assert not session.committed
+
+
+def test_insert_profile_facts_skips_when_table_is_missing(monkeypatch):
+    session = MissingProfileFactsSession()
+
+    async def noop_ensure_demo_user(user_id: str) -> None:
+        return None
+
+    monkeypatch.setattr(store, "ensure_demo_user", noop_ensure_demo_user)
+    monkeypatch.setattr(store, "get_sessionmaker", lambda: lambda: session)
+
+    asyncio.run(
+        store.insert_profile_facts(
+            "00000000-0000-4000-8000-000000000001",
+            [
+                store.ExtractedProfileFact(
+                    fact_type="preference",
+                    label="tone",
+                    value="direct",
+                    sensitivity="normal",
+                    source="chat",
+                    confidence=0.7,
+                    expires_at=store.datetime.now(store.UTC),
+                )
+            ],
+        )
+    )
+
+    assert not session.committed

@@ -1,9 +1,10 @@
 import asyncio
 
-from app.main import VoiceTranscriptSegment, chat, merge_transcript_segments, split_response_parts, split_tts_chunks
-from app.schemas import ChatRequest, SafetyLevel
+import app.main as main
+from app.main import VoiceTranscriptSegment, chat, merge_transcript_segments, reply_suggestions, split_response_parts, split_tts_chunks
+from app.schemas import ChatRequest, ReplySuggestionsRequest, SafetyLevel
 from app.services.ai import generate_grounded_response
-from app.services.openai_provider import build_history_block
+from app.services.openai_provider import build_history_block, parse_reply_suggestions
 
 
 def test_chat_returns_crisis_response_without_normal_coaching():
@@ -47,6 +48,36 @@ def test_history_block_formats_recent_conversation_context():
     assert "User: This is the first thing I said." in block
     assert "Forge: What is taking the most energy?" in block
     assert "User: Work pressure and not sleeping." in block
+
+
+def test_reply_suggestions_fallback_answers_latest_forge_question(monkeypatch):
+    class FakeProvider:
+        def generate_reply_suggestions(self, user_message, forge_message, mode, history):
+            return ["I feel overloaded", "The deadline is urgent", "Help me prioritize"]
+
+    monkeypatch.setattr(main, "OpenAIProvider", FakeProvider)
+
+    response = asyncio.run(
+        reply_suggestions(
+            ReplySuggestionsRequest(
+                user_id="user-1",
+                user_message="I am overloaded with work",
+                forge_message="What is taking the most energy right now?",
+                mode="vent",
+                history=[],
+            )
+        )
+    )
+
+    assert response.suggestions == ["I feel overloaded", "The deadline is urgent", "Help me prioritize"]
+
+
+def test_parse_reply_suggestions_rejects_questions_and_duplicates():
+    suggestions = parse_reply_suggestions(
+        '{"suggestions":["The deadline","The deadline","What should I do?","I need boundaries"]}'
+    )
+
+    assert suggestions == ["The deadline", "I need boundaries"]
 
 
 def test_split_response_parts_separates_body_and_question():

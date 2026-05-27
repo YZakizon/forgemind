@@ -11,6 +11,7 @@ from app.schemas import (
     MemoryCandidate,
     MemoryStatus,
     MoodCheckin,
+    ProfileFact,
     ProgressSummary,
     ProgressTheme,
     ResetSession,
@@ -18,6 +19,7 @@ from app.schemas import (
     SafetyLevel,
     UserDataExport,
 )
+from app.services.profile_facts import ExtractedProfileFact
 from app.services.guidance import DEFAULT_GUIDANCE_RULES
 
 
@@ -27,6 +29,13 @@ def _uuid(value: str) -> UUID:
 
 def _vector_literal(values: list[float]) -> str:
     return "[" + ",".join(f"{value:.8f}" for value in values) + "]"
+
+
+def _is_missing_profile_facts_table(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "profile_facts" in message and (
+        "undefinedtable" in message or "does not exist" in message or "no such table" in message
+    )
 
 
 async def ensure_demo_user(user_id: str) -> None:
@@ -275,6 +284,97 @@ async def insert_memories(user_id: str, contents: list[str], embedding_by_conten
         await session.commit()
 
 
+async def purge_expired_profile_facts(user_id: str | None = None) -> int:
+    sessionmaker = get_sessionmaker()
+    async with sessionmaker() as session:
+        try:
+            if user_id:
+                result = await session.execute(
+                    text("DELETE FROM profile_facts WHERE user_id = :user_id AND expires_at <= now()"),
+                    {"user_id": _uuid(user_id)},
+                )
+            else:
+                result = await session.execute(text("DELETE FROM profile_facts WHERE expires_at <= now()"), {})
+            await session.commit()
+        except Exception as exc:
+            if _is_missing_profile_facts_table(exc):
+                return 0
+            raise
+    return int(result.rowcount or 0)
+
+
+async def insert_profile_facts(user_id: str, facts: list[ExtractedProfileFact]) -> None:
+    if not facts:
+        return
+    await ensure_demo_user(user_id)
+    await purge_expired_profile_facts(user_id)
+    sessionmaker = get_sessionmaker()
+    async with sessionmaker() as session:
+        try:
+            for fact in facts:
+                await session.execute(
+                    text(
+                        """
+                        INSERT INTO profile_facts (
+                            id, user_id, fact_type, label, value, sensitivity, source, confidence, expires_at
+                        )
+                        VALUES (
+                            :id, :user_id, :fact_type, :label, :value, :sensitivity, :source, :confidence, :expires_at
+                        )
+                        ON CONFLICT (user_id, fact_type, label, value) DO UPDATE SET
+                            sensitivity = EXCLUDED.sensitivity,
+                            source = EXCLUDED.source,
+                            confidence = GREATEST(profile_facts.confidence, EXCLUDED.confidence),
+                            expires_at = GREATEST(profile_facts.expires_at, EXCLUDED.expires_at),
+                            updated_at = now()
+                        """
+                    ),
+                    {
+                        "id": uuid4(),
+                        "user_id": _uuid(user_id),
+                        "fact_type": fact.fact_type,
+                        "label": fact.label,
+                        "value": fact.value,
+                        "sensitivity": fact.sensitivity,
+                        "source": fact.source,
+                        "confidence": fact.confidence,
+                        "expires_at": fact.expires_at,
+                    },
+                )
+            await session.commit()
+        except Exception as exc:
+            if _is_missing_profile_facts_table(exc):
+                return
+            raise
+
+
+async def list_user_profile_facts(user_id: str) -> list[ProfileFact]:
+    await purge_expired_profile_facts(user_id)
+    sessionmaker = get_sessionmaker()
+    async with sessionmaker() as session:
+        try:
+            rows = list((
+                await session.execute(
+                    text(
+                        """
+                        SELECT id, user_id, fact_type, label, value, sensitivity, source, confidence,
+                               created_at, updated_at, expires_at
+                        FROM profile_facts
+                        WHERE user_id = :user_id AND expires_at > now()
+                        ORDER BY updated_at DESC
+                        LIMIT 100
+                        """
+                    ),
+                    {"user_id": _uuid(user_id)},
+                )
+            ).mappings())
+        except Exception as exc:
+            if _is_missing_profile_facts_table(exc):
+                return []
+            raise
+    return [_profile_fact_from_row(row) for row in rows]
+
+
 async def list_user_memories(user_id: str) -> list[MemoryCandidate]:
     sessionmaker = get_sessionmaker()
     async with sessionmaker() as session:
@@ -505,6 +605,7 @@ async def archive_user_memories(user_id: str) -> int:
 
 async def export_user_data(user_id: str) -> UserDataExport:
     memories = await list_user_memories(user_id)
+    profile_facts = await list_user_profile_facts(user_id)
     sessionmaker = get_sessionmaker()
     async with sessionmaker() as session:
         checkins = list((
@@ -550,6 +651,7 @@ async def export_user_data(user_id: str) -> UserDataExport:
     return UserDataExport(
         user_id=user_id,
         memories=memories,
+        profile_facts=profile_facts,
         mood_checkins=[_mood_checkin_from_row(row) for row in checkins],
         reset_sessions=[_reset_session_from_row(row) for row in resets],
         chat_messages=[
@@ -575,11 +677,17 @@ async def delete_user_data(user_id: str) -> None:
             "mood_checkins",
             "subscriptions",
             "safety_events",
+            "profile_facts",
             "memories",
             "chat_messages",
             "chat_sessions",
         ]:
-            await session.execute(text(f"DELETE FROM {table} WHERE user_id = :user_id"), {"user_id": parsed_user_id})
+            try:
+                await session.execute(text(f"DELETE FROM {table} WHERE user_id = :user_id"), {"user_id": parsed_user_id})
+            except Exception as exc:
+                if table == "profile_facts" and _is_missing_profile_facts_table(exc):
+                    continue
+                raise
         await session.commit()
 
 
@@ -598,6 +706,22 @@ def _memory_from_row(row) -> MemoryCandidate:
         updated_at=_aware(row["updated_at"]),
         archived_at=_aware(row["archived_at"]) if row["archived_at"] else None,
         expires_at=_aware(row["expires_at"]) if row["expires_at"] else None,
+    )
+
+
+def _profile_fact_from_row(row) -> ProfileFact:
+    return ProfileFact(
+        id=str(row["id"]),
+        user_id=str(row["user_id"]),
+        fact_type=row["fact_type"],
+        label=row["label"],
+        value=row["value"],
+        sensitivity=row["sensitivity"],
+        source=row["source"],
+        confidence=float(row["confidence"]),
+        created_at=_aware(row["created_at"]),
+        updated_at=_aware(row["updated_at"]),
+        expires_at=_aware(row["expires_at"]),
     )
 
 

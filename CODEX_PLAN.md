@@ -159,6 +159,8 @@ Task is not complete until:
 - Rapid repeated quick check-in taps must produce at most one in-flight request.
 - After one successful quick check-in, tapping a different quick check-in should save without a false fallback timeout.
 - Burned out quick check-in should either show success feedback and set Talk mode to Vent, or show a clear sync failure message within the backend fallback timeout.
+- Production user-facing errors must hide technical/dev wording. For backend connection failures, use copy like "Forge is unable to connect. Please try again." instead of "Check the server and try again."
+- Talk page chat messages should show a humanized date/time in the chat box.
 
 ---
 

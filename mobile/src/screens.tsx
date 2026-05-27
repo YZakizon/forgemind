@@ -40,8 +40,9 @@ import {
   DEMO_USER_ID,
   exportUserData,
   fetchProgressSummary,
+  generateReplySuggestions,
   sendChatMessage,
-  sendChatMessageStream,
+  type ChatHistoryItem,
   type ForgeChatResponse,
   type ProgressSummary,
   type VoiceSocketMessage
@@ -61,6 +62,14 @@ const voicePreferredSegmentMaxMs = 8_000;
 const voiceMaxSegmentMs = 12_000;
 const voiceAmplitudeThreshold = 900;
 const checkinTimeoutMs = 11_000;
+const voiceSocketInactivityMs = 30_000;
+
+type TalkMessage = {
+  id: string;
+  role: "forge" | "user";
+  text: string;
+  createdAt: number;
+};
 
 function toggleSelection(values: string[], value: string) {
   return values.includes(value) ? values.filter((item) => item !== value) : [...values, value];
@@ -230,7 +239,7 @@ export function HomeScreen() {
     }, 4_000);
     const stopTimer = setTimeout(() => {
       if (checkinRequestIdRef.current === requestId) {
-        setCheckinStatus("Check-in could not sync. Try again with the backend running.");
+        setCheckinStatus("Check-in could not sync. Please try again.");
         setSavingCheckin(false);
       }
     }, checkinTimeoutMs + 1_000);
@@ -243,7 +252,7 @@ export function HomeScreen() {
       setCheckinStatus(`${checkinFeedback(label)} Talk mode set to ${talkMode}.`);
     } catch {
       if (checkinRequestIdRef.current === requestId) {
-        setCheckinStatus("Check-in could not sync. Try again with the backend running.");
+        setCheckinStatus("Check-in could not sync. Please try again.");
       }
     } finally {
       clearTimeout(statusTimer);
@@ -326,7 +335,7 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
 }
 
 export function TalkScreen() {
-  const initialForgeMessage = { id: "m1", role: "forge" as const, text: "What can I help you with right now?" };
+  const initialForgeMessage = { id: "m1", role: "forge" as const, text: "What can I help you with right now?", createdAt: Date.now() };
   const [mode, setMode] = useState<Mode>("Clarity");
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
@@ -347,6 +356,9 @@ export function TalkScreen() {
   const speechQueueRef = useRef(Promise.resolve());
   const speechQueueTokenRef = useRef(0);
   const voiceSocketRef = useRef<WebSocket | null>(null);
+  const voiceSocketInactivityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const talkFocusedRef = useRef(true);
+  const voiceTurnInFlightRef = useRef(false);
   const chunkIndexRef = useRef(0);
   const chunkStartedAtRef = useRef<number | null>(null);
   const lastVoiceAtRef = useRef<number | null>(null);
@@ -361,7 +373,9 @@ export function TalkScreen() {
     question: ""
   });
   const queuedTtsAudioKeysRef = useRef<Set<string>>(new Set());
-  const [messages, setMessages] = useState<Array<{ id: string; role: "forge" | "user"; text: string }>>([initialForgeMessage]);
+  const suggestionRequestIdRef = useRef(0);
+  const [messages, setMessages] = useState<TalkMessage[]>([initialForgeMessage]);
+  const [chatClock, setChatClock] = useState(Date.now());
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const conversationStarted = messages.some((message) => message.role === "user");
 
@@ -383,12 +397,24 @@ export function TalkScreen() {
     setReadAloudFollowups(false);
     setDraft("");
     setError(null);
+    suggestionRequestIdRef.current += 1;
     setSuggestions([]);
-    setMessages([{ ...initialForgeMessage, id: `m1-${Date.now()}` }]);
+    setMessages([{ ...initialForgeMessage, id: `m1-${Date.now()}`, createdAt: Date.now() }]);
   }
 
-  function updateSuggestionsFromConversation(response: string, userMessage: string) {
-    setSuggestions(buildReplySuggestions(response, userMessage, mode));
+  async function updateSuggestionsFromConversation(response: string, userMessage: string, history: ChatHistoryItem[] = buildChatHistory(messages)) {
+    const requestId = suggestionRequestIdRef.current + 1;
+    suggestionRequestIdRef.current = requestId;
+    try {
+      const generated = await generateReplySuggestions(userMessage, response, mode, history);
+      if (suggestionRequestIdRef.current === requestId) {
+        setSuggestions(generated.length ? generated : buildReplySuggestions(response, userMessage, mode));
+      }
+    } catch {
+      if (suggestionRequestIdRef.current === requestId) {
+        setSuggestions(buildReplySuggestions(response, userMessage, mode));
+      }
+    }
   }
 
   function scrollChatToBottom(animated = true) {
@@ -429,6 +455,80 @@ export function TalkScreen() {
     speechQueueRef.current = Promise.resolve();
   }
 
+  function clearVoiceSocketInactivityTimer() {
+    if (voiceSocketInactivityTimerRef.current) {
+      clearTimeout(voiceSocketInactivityTimerRef.current);
+      voiceSocketInactivityTimerRef.current = null;
+    }
+  }
+
+  function scheduleVoiceSocketInactivityClose() {
+    clearVoiceSocketInactivityTimer();
+    const socket = voiceSocketRef.current;
+    if (!socket || socket.readyState === WebSocket.CLOSING || socket.readyState === WebSocket.CLOSED) return;
+    voiceSocketInactivityTimerRef.current = setTimeout(() => {
+      voiceSocketInactivityTimerRef.current = null;
+      voiceSocketRef.current?.close();
+      voiceSocketRef.current = null;
+    }, voiceSocketInactivityMs);
+  }
+
+  function stopLocalTalkActivity(finishVoiceTurn = false) {
+    stopReadAloud();
+    clearVoiceTimers();
+    if (recordingRef.current && ForgeMindAudioRecorder) {
+      if (finishVoiceTurn && voiceDetectedRef.current) {
+        finishRecordingAndContinueVoiceTurn().catch(() => {
+          voiceTurnInFlightRef.current = false;
+          scheduleVoiceSocketInactivityClose();
+        });
+        return;
+      }
+      ForgeMindAudioRecorder.cancel().catch(() => undefined);
+      recordingRef.current = false;
+      setVoiceRecording(false);
+      if (finishVoiceTurn && !voiceDetectedRef.current) {
+        voiceTurnInFlightRef.current = false;
+      }
+    }
+    if (!finishVoiceTurn || !voiceTurnInFlightRef.current) {
+      setTranscribing(false);
+      setSending(false);
+    }
+    stoppingRef.current = false;
+    startedAtRef.current = null;
+    chunkRotatingRef.current = false;
+    pendingChunkUploadsRef.current = 0;
+    if (!voiceTurnInFlightRef.current) {
+      scheduleVoiceSocketInactivityClose();
+    }
+  }
+
+  async function finishRecordingAndContinueVoiceTurn() {
+    if (stoppingRef.current || !recordingRef.current || !ForgeMindAudioRecorder) return;
+    stoppingRef.current = true;
+    try {
+      const segmentStartedAt = chunkStartedAtRef.current ?? Date.now();
+      const segmentEndedAt = Date.now();
+      const finalChunkHadVoice = chunkVoiceDetectedRef.current;
+      const path = await ForgeMindAudioRecorder.stop();
+      recordingRef.current = false;
+      setVoiceRecording(false);
+      if (finalChunkHadVoice) {
+        await sendVoiceChunk(path, segmentStartedAt, segmentEndedAt);
+      } else {
+        ForgeMindAudioRecorder.deleteFile?.(path).catch(() => undefined);
+      }
+      startedAtRef.current = null;
+      sendVoiceStopWhenReady();
+    } finally {
+      stoppingRef.current = false;
+      recordingRef.current = false;
+      startedAtRef.current = null;
+      setVoiceRecording(false);
+    }
+  }
+
   function toggleForgeSpeech(messageId: string, text: string) {
     if (speakingMessageId === messageId) {
       stopReadAloud();
@@ -438,15 +538,11 @@ export function TalkScreen() {
   }
 
   const leaveTalk = useCallback(() => {
-    stopReadAloud();
-    if (recordingRef.current && ForgeMindAudioRecorder) {
-      ForgeMindAudioRecorder.cancel().catch(() => undefined);
-      recordingRef.current = false;
-      setVoiceRecording(false);
-    }
-    clearVoiceTimers();
+    stopLocalTalkActivity(false);
     voiceSocketRef.current?.close();
     voiceSocketRef.current = null;
+    clearVoiceSocketInactivityTimer();
+    voiceTurnInFlightRef.current = false;
 
     if (navigation.canGoBack()) {
       navigation.goBack();
@@ -518,9 +614,11 @@ export function TalkScreen() {
 
   function resetVoiceSessionState() {
     clearVoiceTimers();
+    clearVoiceSocketInactivityTimer();
     voiceSocketRef.current?.close();
     voiceSocketRef.current = null;
     pendingChunkUploadsRef.current = 0;
+    voiceTurnInFlightRef.current = false;
     chunkRotatingRef.current = false;
     voiceTranscriptRef.current = "";
     forgeStreamMessageIdRef.current = null;
@@ -539,26 +637,31 @@ export function TalkScreen() {
     const history = buildChatHistory(messages);
     setDraft("");
     setError(null);
+    suggestionRequestIdRef.current += 1;
     setSuggestions([]);
     setSending(true);
-    setMessages((current) => [...current, { id: `user-${Date.now()}`, role: "user", text: trimmed }]);
+    setMessages((current) => [...current, { id: `user-${Date.now()}`, role: "user", text: trimmed, createdAt: Date.now() }]);
     try {
       const result = await sendChatMessage(trimmed, mode, history);
       const messageId = `forge-${Date.now()}`;
-      setMessages((current) => [...current, { id: messageId, role: "forge", text: result.response }]);
-      updateSuggestionsFromConversation(result.response, trimmed);
+      setMessages((current) => [...current, { id: messageId, role: "forge", text: result.response, createdAt: Date.now() }]);
+      updateSuggestionsFromConversation(result.response, trimmed, [
+        ...history,
+        { role: "user", text: trimmed },
+        { role: "forge", text: result.response }
+      ]).catch(() => undefined);
       if (speakResponse) {
         speakForgeMessage(messageId, result.response, responseSpeechSegments(result));
       }
     } catch {
-      setError("Forge couldn’t reach the backend. Check the server and try again.");
+      setError("Forge is unable to connect. Please try again.");
     } finally {
       setSending(false);
     }
   }
 
   function appendVoiceTranscript(transcript: string) {
-    setMessages((current) => [...current, { id: `voice-${Date.now()}`, role: "user", text: transcript }]);
+    setMessages((current) => [...current, { id: `voice-${Date.now()}`, role: "user", text: transcript, createdAt: Date.now() }]);
   }
 
   useEffect(() => {
@@ -567,6 +670,7 @@ export function TalkScreen() {
         clearTimeout(speechTimerRef.current);
       }
       clearVoiceTimers();
+      clearVoiceSocketInactivityTimer();
       voiceSocketRef.current?.close();
       if (recordingRef.current && ForgeMindAudioRecorder) {
         ForgeMindAudioRecorder.cancel().catch(() => undefined);
@@ -577,6 +681,26 @@ export function TalkScreen() {
   useEffect(() => {
     navigation.setOptions({ tabBarStyle: { display: "none" } });
   }, [navigation]);
+
+  useFocusEffect(
+    useCallback(() => {
+      talkFocusedRef.current = true;
+      clearVoiceSocketInactivityTimer();
+      const timer = setInterval(() => setChatClock(Date.now()), 1_000);
+      return () => {
+        clearInterval(timer);
+        talkFocusedRef.current = false;
+      };
+    }, [])
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      return () => {
+        stopLocalTalkActivity(true);
+      };
+    }, [])
+  );
 
   useFocusEffect(
     useCallback(() => {
@@ -617,6 +741,7 @@ export function TalkScreen() {
 
   async function startVoiceMessage() {
     if (sending || recordingRef.current) return;
+    clearVoiceSocketInactivityTimer();
     stopReadAloud();
     setError(null);
     if (!ForgeMindAudioRecorder) {
@@ -636,6 +761,7 @@ export function TalkScreen() {
       queuedTtsAudioKeysRef.current.clear();
       chunkIndexRef.current = 0;
       pendingChunkUploadsRef.current = 0;
+      voiceTurnInFlightRef.current = true;
       chunkRotatingRef.current = false;
       voiceDetectedRef.current = false;
       chunkVoiceDetectedRef.current = false;
@@ -650,22 +776,26 @@ export function TalkScreen() {
       if (!socket || socket.readyState === WebSocket.CLOSING || socket.readyState === WebSocket.CLOSED) {
         socket = createVoiceWebSocket();
         voiceSocketRef.current = socket;
-        socket.onopen = () => {
-          socket?.send(JSON.stringify(startPayload));
-        };
-        socket.onmessage = (event) => handleVoiceSocketMessage(event.data);
-        socket.onerror = () => {
-          setError("Voice failed: WebSocket connection failed.");
-        };
-        socket.onclose = () => {
-          if (recordingRef.current) {
-            setError("Voice connection closed. Tap again to retry.");
-          }
-        };
-      } else if (socket.readyState === WebSocket.OPEN) {
-        socket.send(
-          JSON.stringify(startPayload)
-        );
+      }
+      socket.onopen = () => {
+        socket?.send(JSON.stringify(startPayload));
+      };
+      socket.onmessage = (event) => handleVoiceSocketMessage(event.data);
+      socket.onerror = () => {
+        if (talkFocusedRef.current) {
+          setError("Voice is unable to connect. Please try again.");
+        }
+      };
+      socket.onclose = () => {
+        if (voiceSocketRef.current === socket) {
+          voiceSocketRef.current = null;
+        }
+        if (recordingRef.current && talkFocusedRef.current) {
+          setError("Voice connection closed. Tap again to retry.");
+        }
+      };
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify(startPayload));
       }
 
       await ForgeMindAudioRecorder.cancel().catch(() => undefined);
@@ -680,7 +810,9 @@ export function TalkScreen() {
         stopVoiceMessage().catch(() => undefined);
       }, maxVoiceRecordingMs);
     } catch (voiceError) {
+      voiceTurnInFlightRef.current = false;
       clearVoiceTimers();
+      clearVoiceSocketInactivityTimer();
       voiceSocketRef.current?.close();
       voiceSocketRef.current = null;
       recordingRef.current = false;
@@ -695,11 +827,16 @@ export function TalkScreen() {
     try {
       message = JSON.parse(data) as VoiceSocketMessage;
     } catch {
-      setError("Voice failed: backend sent an invalid message.");
+      setError("Voice is unable to connect. Please try again.");
       return;
     }
 
     if (message.type === "error") {
+      voiceTurnInFlightRef.current = false;
+      if (!talkFocusedRef.current) {
+        scheduleVoiceSocketInactivityClose();
+        return;
+      }
       setError(voiceErrorMessage(new Error(message.detail || "Voice chat failed")));
       setTranscribing(false);
       setSending(false);
@@ -723,7 +860,7 @@ export function TalkScreen() {
       applyForgeStreamPart(message.part, partText, message.chunk_index ?? 0);
       updateForgeStreamMessage(messageId);
       if (message.part === "question") {
-        updateSuggestionsFromConversation(partText, voiceTranscriptRef.current);
+        updateSuggestionsFromConversation(partText, voiceTranscriptRef.current).catch(() => undefined);
       }
       return;
     }
@@ -738,7 +875,9 @@ export function TalkScreen() {
       const audioKey = `${message.part}-${chunkIndex}-${text}`;
       if (queuedTtsAudioKeysRef.current.has(audioKey)) return;
       queuedTtsAudioKeysRef.current.add(audioKey);
-      queueForgeAudio(messageId, text, message.audio_base64, message.format || "mp3", audioKey);
+      if (talkFocusedRef.current) {
+        queueForgeAudio(messageId, text, message.audio_base64, message.format || "mp3", audioKey);
+      }
       return;
     }
 
@@ -748,15 +887,23 @@ export function TalkScreen() {
       if (messageId) {
         setMessages((current) => current.map((item) => (item.id === messageId ? { ...item, text: result.response } : item)));
       } else {
-        setMessages((current) => [...current, { id: `forge-${Date.now()}`, role: "forge", text: result.response }]);
+        setMessages((current) => [...current, { id: `forge-${Date.now()}`, role: "forge", text: result.response, createdAt: Date.now() }]);
       }
-      updateSuggestionsFromConversation(result.response, voiceTranscriptRef.current);
+      updateSuggestionsFromConversation(result.response, voiceTranscriptRef.current, [
+        ...buildChatHistory(messages),
+        { role: "user", text: voiceTranscriptRef.current },
+        { role: "forge", text: result.response }
+      ]).catch(() => undefined);
       return;
     }
 
     if (message.type === "done") {
+      voiceTurnInFlightRef.current = false;
       setTranscribing(false);
       setSending(false);
+      if (!talkFocusedRef.current) {
+        scheduleVoiceSocketInactivityClose();
+      }
     }
   }
 
@@ -773,7 +920,7 @@ export function TalkScreen() {
     setMessages((current) => {
       const exists = current.some((item) => item.id === messageId);
       if (!exists) {
-        return [...current, { id: messageId, role: "forge", text }];
+        return [...current, { id: messageId, role: "forge", text, createdAt: Date.now() }];
       }
       return current.map((item) => (item.id === messageId ? { ...item, text } : item));
     });
@@ -978,6 +1125,7 @@ export function TalkScreen() {
                 key={message.id}
                 role={message.role}
                 subtitle={message.role === "forge" ? "Forge" : "You"}
+                timestamp={humanizeChatDate(message.createdAt, chatClock)}
                 speaking={message.id === speakingMessageId}
                 onSpeak={message.role === "forge" && conversationStarted ? () => toggleForgeSpeech(message.id, message.text) : undefined}
               >
@@ -1095,15 +1243,34 @@ function voiceErrorMessage(error: unknown) {
     if (error.message.includes("No speech detected")) {
       return "No voice is detected.";
     }
-    return `Voice failed: ${error.message}`;
+    return "Voice is unable to connect. Please try again.";
   }
-  return "Forge couldn’t process that recording. Try again when the backend is available.";
+  return "Forge is unable to process that recording. Please try again.";
 }
 
 function buildChatHistory(messages: Array<{ role: "forge" | "user"; text: string }>) {
   return messages
     .filter((message) => message.text.trim())
     .map((message) => ({ role: message.role, text: message.text }));
+}
+
+function humanizeChatDate(timestamp: number, now = Date.now()) {
+  const elapsedMs = Math.max(0, now - timestamp);
+  const elapsedSeconds = Math.floor(elapsedMs / 1000);
+  if (elapsedSeconds < 10) return "Just now";
+  if (elapsedSeconds < 60) return `${elapsedSeconds}s ago`;
+
+  const elapsedMinutes = Math.floor(elapsedMs / 60_000);
+  if (elapsedMinutes < 60) return `${elapsedMinutes} min ago`;
+
+  const date = new Date(timestamp);
+  const today = new Date(now);
+  const yesterday = new Date(now);
+  yesterday.setDate(today.getDate() - 1);
+  const time = date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  if (date.toDateString() === today.toDateString()) return time;
+  if (date.toDateString() === yesterday.toDateString()) return `Yesterday ${time}`;
+  return date.toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
 function responseSpeechSegments(response: ForgeChatResponse) {
@@ -1171,58 +1338,6 @@ function buildReplySuggestions(response: string, userMessage: string, mode: Mode
   const forge = response.toLowerCase();
   const user = userMessage.toLowerCase();
   const context = `${user} ${forge}`;
-  const lastQuestion = extractLastQuestion(response).toLowerCase();
-  const prompt = lastQuestion || forge;
-
-  if (lastQuestion) {
-    if (hasAny(prompt, ["hardest part", "most energy", "headspace", "weighing on you", "taking up the most", "hardest thing"])) {
-      return contextualOptions(context, {
-        work: ["Keeping up at work", "Feeling behind", "Too many decisions"],
-        relationship: ["The uncertainty", "I keep replaying it", "I don’t know where we stand"],
-        sleep: ["My mind won’t shut off", "I keep thinking ahead", "I feel exhausted"],
-        anger: ["Feeling disrespected", "I want to react", "I need to cool down"],
-        fallback: ["The pressure", "Feeling stuck", "I don’t know yet"]
-      });
-    }
-    if (hasAny(prompt, ["what happened", "what changed", "walk me through", "where did it start"])) {
-      return ["It started today", "There’s a pattern", "I need to explain"];
-    }
-    if (hasAny(prompt, ["what do you need", "what would help", "what feels useful", "what would be useful"])) {
-      return ["I need clarity", "Help me calm down", "Give me one step"];
-    }
-    if (hasAny(prompt, ["what are you tempted", "what might you regret", "what do you need to not do", "what are you worried you might do"])) {
-      return ["Send a message", "Argue back", "Shut down"];
-    }
-    if (hasAny(prompt, ["what can wait", "what can you put down", "what does not need solving"])) {
-      return ["Work can wait", "The decision can wait", "The argument can wait"];
-    }
-    if (hasAny(prompt, ["one thing", "first step", "next step", "smallest step"])) {
-      return ["Name the problem", "Take five minutes", "Make one decision"];
-    }
-    if (hasAny(prompt, ["how does that land", "does that fit", "feel accurate", "is that right"])) {
-      return ["Yes, that fits", "Not exactly", "There’s more"];
-    }
-    if (hasAny(prompt, ["which part", "what part"])) {
-      return ["The pressure", "The uncertainty", "The timing"];
-    }
-    if (hasAny(prompt, ["why", "what makes"])) {
-      return ["I feel responsible", "I don’t want to fail", "I’m tired of carrying it"];
-    }
-    if (hasAny(prompt, ["who", "with who", "from who"])) {
-      return ["My partner", "Someone at work", "My family"];
-    }
-    if (hasAny(prompt, ["when", "how long"])) {
-      return ["Since today", "All week", "For a while"];
-    }
-    return contextualOptions(context, {
-      work: ["It’s work pressure", "I feel overloaded", "I need boundaries"],
-      relationship: ["It’s the relationship", "I feel unsure", "I need to talk it out"],
-      sleep: ["I can’t sleep", "My thoughts keep going", "I need to wind down"],
-      anger: ["I’m still angry", "I feel triggered", "I need space first"],
-      fallback: ["I’m not sure", "There’s more", "Help me name it"]
-    });
-  }
-
   if (hasAny(forge, ["one safe next step", "next step", "one step"])) {
     return ["Give me one step", "Help me choose", "Make it simpler"];
   }
@@ -1235,14 +1350,9 @@ function buildReplySuggestions(response: string, userMessage: string, mode: Mode
       mode === "Advice"
         ? ["What should I do?", "Give me one step", "Help me decide"]
         : mode === "Calm"
-          ? ["Help me slow down", "I need grounding", "Stay with this"]
-          : ["Say more", "Help me slow down", "What am I missing?"]
+        ? ["Help me slow down", "I need grounding", "Stay with this"]
+        : ["Say more", "Help me slow down", "What am I missing?"]
   });
-}
-
-function extractLastQuestion(text: string) {
-  const questionMatches = text.match(/[^.!?\n]*\?/g);
-  return questionMatches?.at(-1)?.trim() ?? "";
 }
 
 function hasAny(text: string, terms: string[]) {
@@ -1288,7 +1398,7 @@ export function ResetScreen() {
       await completeResetSession(session.id);
       setStatus(`${title} completed`);
     } catch {
-      setStatus("Reset could not sync. Try again with the backend running.");
+      setStatus("Reset could not sync. Please try again.");
     }
   }
 
@@ -1424,7 +1534,7 @@ export function ProfileScreen() {
       setConfirmingDelete(false);
       setStatus(result.detail);
     } catch {
-      setStatus("Data control could not sync. Try again with the backend running.");
+      setStatus("Data control could not sync. Please try again.");
     }
   }
 

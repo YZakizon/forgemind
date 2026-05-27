@@ -170,6 +170,30 @@ export async function sendChatMessage(message: string, mode: Mode, history: Chat
   return response.json();
 }
 
+export async function generateReplySuggestions(
+  userMessage: string,
+  forgeMessage: string,
+  mode: Mode,
+  history: ChatHistoryItem[] = []
+): Promise<string[]> {
+  const response = await fetchWithBackendFallback("/reply-suggestions", () => ({
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      user_id: DEMO_USER_ID,
+      user_message: userMessage,
+      forge_message: forgeMessage,
+      mode: mode.toLowerCase(),
+      history
+    })
+  }));
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  const result = (await response.json()) as { suggestions?: string[] };
+  return (result.suggestions ?? []).filter((item) => item.trim()).slice(0, 3);
+}
+
 export async function createMoodCheckin(label: string, intensity?: number): Promise<MoodCheckin> {
   const response = await fetchWithBackendFallback("/mood-checkins", () => ({
     method: "POST",
