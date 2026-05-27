@@ -111,6 +111,16 @@ class ProfileFact(BaseModel):
     expires_at: datetime
 
 
+class ProfileFactPolicy(BaseModel):
+    capture_terms: dict[str, list[str]] = Field(default_factory=dict)
+    blocked_terms: dict[str, list[str]] = Field(default_factory=dict)
+    ttl_days_by_type: dict[str, int] = Field(default_factory=dict)
+
+
+class ProfileFactPolicyUpdate(ProfileFactPolicy):
+    pass
+
+
 class GuidanceRule(BaseModel):
     id: str
     topic: str

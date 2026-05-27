@@ -1,4 +1,6 @@
-const sections = ["Guidance Rules", "Users", "Memories", "Safety Events", "Prompt Configuration", "Metrics"];
+import { ProfilePolicyPanel, type ProfileFactPolicy } from "./ProfilePolicyPanel";
+
+const sections = ["Guidance Rules", "Users", "Memories", "PII Capture Policy", "Safety Events", "Prompt Configuration", "Metrics"];
 const demoUserId = "00000000-0000-4000-8000-000000000001";
 
 type GuidanceRule = {
@@ -46,6 +48,11 @@ export default async function AdminHome() {
     fetchJson<{ items: MemoryItem[] }>(`${apiBaseUrl}/memories?user_id=${demoUserId}`, { items: [] }),
     fetchJson<{ items: SafetyEvent[] }>(`${apiBaseUrl}/safety/events`, { items: [] })
   ]);
+  const profileFactPolicy = await fetchJson<ProfileFactPolicy>(`${apiBaseUrl}/profile-facts/policy`, {
+    capture_terms: {},
+    blocked_terms: {},
+    ttl_days_by_type: {}
+  });
 
   return (
     <main className="shell">
@@ -148,6 +155,8 @@ export default async function AdminHome() {
             {memories.items.length === 0 ? <EmptyRow label="No memories stored for the demo user yet." /> : null}
           </div>
         </section>
+
+        <ProfilePolicyPanel initialPolicy={profileFactPolicy} />
 
         <section id="safety-events" className="panel">
           <div className="panelHeader">

@@ -53,13 +53,24 @@ a {
 .sidebar a,
 button,
 .metricLink,
-code {
+code,
+select,
+input {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
   color: var(--text);
   padding: 10px 12px;
   font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: wait;
+  opacity: 0.65;
 }
 
 code {
@@ -155,6 +166,68 @@ code {
   border-top: 1px solid var(--line);
 }
 
+.policyGrid {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr) minmax(0, 1fr);
+  gap: 20px;
+  margin-top: 20px;
+}
+
+.policyColumn {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-width: 0;
+}
+
+.policyColumn label,
+.fieldTitle {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-height: 42px;
+}
+
+.chips button {
+  padding: 7px 10px;
+  color: var(--accent);
+}
+
+.inlineForm {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.globalBlock {
+  margin-top: 20px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 16px;
+  background: var(--surface);
+}
+
+.policyMeta,
+.success,
+.error {
+  margin: 14px 0 0;
+  font-size: 13px;
+}
+
+.success {
+  color: #79c897;
+}
+
+.error {
+  color: #ff8a8a;
+}
+
 p {
   color: var(--muted);
   line-height: 1.5;
@@ -171,6 +244,10 @@ p {
   }
 
   .grid {
+    grid-template-columns: 1fr;
+  }
+
+  .policyGrid {
     grid-template-columns: 1fr;
   }
 

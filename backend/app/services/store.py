@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -12,6 +13,8 @@ from app.schemas import (
     MemoryStatus,
     MoodCheckin,
     ProfileFact,
+    ProfileFactPolicy,
+    ProfileFactPolicyUpdate,
     ProgressSummary,
     ProgressTheme,
     ResetSession,
@@ -19,7 +22,8 @@ from app.schemas import (
     SafetyLevel,
     UserDataExport,
 )
-from app.services.profile_facts import ExtractedProfileFact
+from app.services.crypto import decrypt_text_for_user, encrypt_text_for_user, generate_dek, unwrap_dek, wrap_dek
+from app.services.profile_facts import ExtractedProfileFact, normalize_profile_fact_policy
 from app.services.guidance import DEFAULT_GUIDANCE_RULES
 
 
@@ -36,6 +40,35 @@ def _is_missing_profile_facts_table(exc: Exception) -> bool:
     return "profile_facts" in message and (
         "undefinedtable" in message or "does not exist" in message or "no such table" in message
     )
+
+
+def _is_missing_encryption_table(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "user_encryption_keys" in message and (
+        "undefinedtable" in message or "does not exist" in message or "no such table" in message
+    )
+
+
+def _is_missing_profile_fact_policy_table(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "profile_fact_capture_policy" in message and (
+        "undefinedtable" in message or "does not exist" in message or "no such table" in message
+    )
+
+
+def _row_value(row, key: str):
+    try:
+        return row[key]
+    except Exception:
+        return None
+
+
+def _bytes(value) -> bytes:
+    return bytes(value) if isinstance(value, memoryview) else value
+
+
+def _json_value(value):
+    return json.loads(value) if isinstance(value, str) else value
 
 
 async def ensure_demo_user(user_id: str) -> None:
@@ -233,13 +266,15 @@ async def fetch_guidance_rules() -> list[GuidanceRule]:
 
 
 async def retrieve_memory_candidates(user_id: str, embedding: list[float], limit: int = 20) -> list[MemoryCandidate]:
+    dek = await get_user_dek(user_id)
     sessionmaker = get_sessionmaker()
     async with sessionmaker() as session:
         rows = list((
             await session.execute(
                 text(
                     """
-                    SELECT id, user_id, type, content, status, importance, confidence, unsafe,
+                    SELECT id, user_id, type, content, content_ciphertext, content_nonce, content_key_id,
+                           status, importance, confidence, unsafe,
                            created_at, updated_at, archived_at, expires_at,
                            GREATEST(0.0, 1.0 - (embedding <=> CAST(:embedding AS vector))) AS similarity
                     FROM memories
@@ -253,35 +288,205 @@ async def retrieve_memory_candidates(user_id: str, embedding: list[float], limit
                 {"user_id": _uuid(user_id), "embedding": _vector_literal(embedding), "limit": limit},
             )
         ).mappings())
-    return [_memory_from_row(row) for row in rows]
+    return [_memory_from_row(row, dek=dek) for row in rows]
 
 
 async def insert_memories(user_id: str, contents: list[str], embedding_by_content: dict[str, list[float]]) -> None:
     if not contents:
         return
+    dek, key_id = await get_or_create_user_dek(user_id)
     sessionmaker = get_sessionmaker()
     async with sessionmaker() as session:
         for content in contents:
+            encrypted = encrypt_text_for_user(user_id, "memories", "content", content, dek, key_id)
             await session.execute(
                 text(
                     """
                     INSERT INTO memories (
-                        id, user_id, type, content, status, importance, confidence, unsafe, embedding
+                        id, user_id, type, content, content_ciphertext, content_nonce, content_key_id, content_hash,
+                        status, importance, confidence, unsafe, embedding
                     )
                     VALUES (
-                        :id, :user_id, 'emotional_pattern', :content, 'active', 0.55, 0.65, false,
-                        CAST(:embedding AS vector)
+                        :id, :user_id, 'emotional_pattern', '', :content_ciphertext, :content_nonce, :content_key_id,
+                        :content_hash, 'active', 0.55, 0.65, false, CAST(:embedding AS vector)
                     )
                     """
                 ),
                 {
                     "id": uuid4(),
                     "user_id": _uuid(user_id),
-                    "content": content,
+                    "content_ciphertext": encrypted.ciphertext,
+                    "content_nonce": encrypted.nonce,
+                    "content_key_id": encrypted.key_id,
+                    "content_hash": encrypted.value_hash,
                     "embedding": _vector_literal(embedding_by_content[content]),
                 },
             )
         await session.commit()
+
+
+async def get_user_dek(user_id: str) -> tuple[bytes, str] | None:
+    sessionmaker = get_sessionmaker()
+    async with sessionmaker() as session:
+        try:
+            row = (
+                await session.execute(
+                    text(
+                        """
+                        SELECT wrapped_dek, wrap_nonce, wrap_key_id
+                        FROM user_encryption_keys
+                        WHERE user_id = :user_id
+                        """
+                    ),
+                    {"user_id": _uuid(user_id)},
+                )
+            ).mappings().one_or_none()
+        except Exception as exc:
+            if _is_missing_encryption_table(exc):
+                return None
+            raise
+    if row is None:
+        return None
+    key_id = row["wrap_key_id"]
+    return unwrap_dek(_bytes(row["wrapped_dek"]), _bytes(row["wrap_nonce"]), user_id, key_id), key_id
+
+
+async def get_or_create_user_dek(user_id: str) -> tuple[bytes, str]:
+    existing = await get_user_dek(user_id)
+    if existing is not None:
+        return existing
+    await ensure_demo_user(user_id)
+    dek = generate_dek()
+    wrapped_dek, wrap_nonce, key_id = wrap_dek(dek, user_id)
+    sessionmaker = get_sessionmaker()
+    async with sessionmaker() as session:
+        row = (
+            await session.execute(
+                text(
+                    """
+                    INSERT INTO user_encryption_keys (user_id, wrapped_dek, wrap_nonce, wrap_key_id)
+                    VALUES (:user_id, :wrapped_dek, :wrap_nonce, :wrap_key_id)
+                    ON CONFLICT (user_id) DO NOTHING
+                    RETURNING wrapped_dek, wrap_nonce, wrap_key_id
+                    """
+                ),
+                {
+                    "user_id": _uuid(user_id),
+                    "wrapped_dek": wrapped_dek,
+                    "wrap_nonce": wrap_nonce,
+                    "wrap_key_id": key_id,
+                },
+            )
+        ).mappings().one_or_none()
+        await session.commit()
+    if row is None:
+        existing = await get_user_dek(user_id)
+        if existing is None:
+            raise RuntimeError("user encryption key was not created")
+        return existing
+    return unwrap_dek(_bytes(row["wrapped_dek"]), _bytes(row["wrap_nonce"]), user_id, row["wrap_key_id"]), row["wrap_key_id"]
+
+
+async def backfill_encrypted_sensitive_text(limit: int = 500) -> dict[str, int]:
+    memory_count = await _backfill_memory_content(limit)
+    profile_fact_count = await _backfill_profile_fact_values(limit)
+    return {"memories": memory_count, "profile_facts": profile_fact_count}
+
+
+async def _backfill_memory_content(limit: int) -> int:
+    sessionmaker = get_sessionmaker()
+    async with sessionmaker() as session:
+        rows = list((
+            await session.execute(
+                text(
+                    """
+                    SELECT id, user_id, content
+                    FROM memories
+                    WHERE content_ciphertext IS NULL AND content <> ''
+                    ORDER BY created_at ASC
+                    LIMIT :limit
+                    """
+                ),
+                {"limit": limit},
+            )
+        ).mappings())
+
+    for row in rows:
+        user_id = str(row["user_id"])
+        dek, key_id = await get_or_create_user_dek(user_id)
+        encrypted = encrypt_text_for_user(user_id, "memories", "content", row["content"], dek, key_id)
+        async with sessionmaker() as session:
+            await session.execute(
+                text(
+                    """
+                    UPDATE memories
+                    SET content = '',
+                        content_ciphertext = :ciphertext,
+                        content_nonce = :nonce,
+                        content_key_id = :key_id,
+                        content_hash = :content_hash,
+                        updated_at = now()
+                    WHERE id = :id AND content_ciphertext IS NULL
+                    """
+                ),
+                {
+                    "id": row["id"],
+                    "ciphertext": encrypted.ciphertext,
+                    "nonce": encrypted.nonce,
+                    "key_id": encrypted.key_id,
+                    "content_hash": encrypted.value_hash,
+                },
+            )
+            await session.commit()
+    return len(rows)
+
+
+async def _backfill_profile_fact_values(limit: int) -> int:
+    sessionmaker = get_sessionmaker()
+    async with sessionmaker() as session:
+        rows = list((
+            await session.execute(
+                text(
+                    """
+                    SELECT id, user_id, value
+                    FROM profile_facts
+                    WHERE value_ciphertext IS NULL AND value <> ''
+                    ORDER BY created_at ASC
+                    LIMIT :limit
+                    """
+                ),
+                {"limit": limit},
+            )
+        ).mappings())
+
+    for row in rows:
+        user_id = str(row["user_id"])
+        dek, key_id = await get_or_create_user_dek(user_id)
+        encrypted = encrypt_text_for_user(user_id, "profile_facts", "value", row["value"], dek, key_id)
+        async with sessionmaker() as session:
+            await session.execute(
+                text(
+                    """
+                    UPDATE profile_facts
+                    SET value = '',
+                        value_ciphertext = :ciphertext,
+                        value_nonce = :nonce,
+                        value_key_id = :key_id,
+                        value_hash = :value_hash,
+                        updated_at = now()
+                    WHERE id = :id AND value_ciphertext IS NULL
+                    """
+                ),
+                {
+                    "id": row["id"],
+                    "ciphertext": encrypted.ciphertext,
+                    "nonce": encrypted.nonce,
+                    "key_id": encrypted.key_id,
+                    "value_hash": encrypted.value_hash,
+                },
+            )
+            await session.commit()
+    return len(rows)
 
 
 async def purge_expired_profile_facts(user_id: str | None = None) -> int:
@@ -303,25 +508,111 @@ async def purge_expired_profile_facts(user_id: str | None = None) -> int:
     return int(result.rowcount or 0)
 
 
+async def get_profile_fact_policy() -> ProfileFactPolicy:
+    sessionmaker = get_sessionmaker()
+    try:
+        async with sessionmaker() as session:
+            row = (
+                await session.execute(
+                    text(
+                        """
+                        SELECT capture_terms, blocked_terms, ttl_days_by_type
+                        FROM profile_fact_capture_policy
+                        WHERE id = 'default'
+                        """
+                    ),
+                    {},
+                )
+            ).mappings().one_or_none()
+    except Exception as exc:
+        if _is_missing_profile_fact_policy_table(exc):
+            return ProfileFactPolicy(**normalize_profile_fact_policy(None))
+        raise
+    if row is None:
+        return ProfileFactPolicy(**normalize_profile_fact_policy(None))
+    return ProfileFactPolicy(
+        **normalize_profile_fact_policy(
+            {
+                "capture_terms": _json_value(row["capture_terms"]),
+                "blocked_terms": _json_value(row["blocked_terms"]),
+                "ttl_days_by_type": _json_value(row["ttl_days_by_type"]),
+            }
+        )
+    )
+
+
+async def save_profile_fact_policy(policy: ProfileFactPolicyUpdate) -> ProfileFactPolicy:
+    normalized = normalize_profile_fact_policy(policy)
+    sessionmaker = get_sessionmaker()
+    async with sessionmaker() as session:
+        try:
+            row = (
+                await session.execute(
+                    text(
+                        """
+                        INSERT INTO profile_fact_capture_policy (
+                            id, capture_terms, blocked_terms, ttl_days_by_type
+                        )
+                        VALUES (
+                            'default',
+                            CAST(:capture_terms AS jsonb),
+                            CAST(:blocked_terms AS jsonb),
+                            CAST(:ttl_days_by_type AS jsonb)
+                        )
+                        ON CONFLICT (id) DO UPDATE SET
+                            capture_terms = EXCLUDED.capture_terms,
+                            blocked_terms = EXCLUDED.blocked_terms,
+                            ttl_days_by_type = EXCLUDED.ttl_days_by_type,
+                            updated_at = now()
+                        RETURNING capture_terms, blocked_terms, ttl_days_by_type
+                        """
+                    ),
+                    {
+                        "capture_terms": json.dumps(normalized["capture_terms"]),
+                        "blocked_terms": json.dumps(normalized["blocked_terms"]),
+                        "ttl_days_by_type": json.dumps(normalized["ttl_days_by_type"]),
+                    },
+                )
+            ).mappings().one()
+            await session.commit()
+        except Exception as exc:
+            if _is_missing_profile_fact_policy_table(exc):
+                return ProfileFactPolicy(**normalized)
+            raise
+    return ProfileFactPolicy(
+        **normalize_profile_fact_policy(
+            {
+                "capture_terms": _json_value(row["capture_terms"]),
+                "blocked_terms": _json_value(row["blocked_terms"]),
+                "ttl_days_by_type": _json_value(row["ttl_days_by_type"]),
+            }
+        )
+    )
+
+
 async def insert_profile_facts(user_id: str, facts: list[ExtractedProfileFact]) -> None:
     if not facts:
         return
     await ensure_demo_user(user_id)
     await purge_expired_profile_facts(user_id)
+    dek, key_id = await get_or_create_user_dek(user_id)
     sessionmaker = get_sessionmaker()
     async with sessionmaker() as session:
         try:
             for fact in facts:
+                encrypted = encrypt_text_for_user(user_id, "profile_facts", "value", fact.value, dek, key_id)
                 await session.execute(
                     text(
                         """
                         INSERT INTO profile_facts (
-                            id, user_id, fact_type, label, value, sensitivity, source, confidence, expires_at
+                            id, user_id, fact_type, label, value, value_ciphertext, value_nonce, value_key_id,
+                            value_hash, sensitivity, source, confidence, expires_at
                         )
                         VALUES (
-                            :id, :user_id, :fact_type, :label, :value, :sensitivity, :source, :confidence, :expires_at
+                            :id, :user_id, :fact_type, :label, '', :value_ciphertext, :value_nonce, :value_key_id,
+                            :value_hash, :sensitivity, :source, :confidence, :expires_at
                         )
-                        ON CONFLICT (user_id, fact_type, label, value) DO UPDATE SET
+                        ON CONFLICT (user_id, fact_type, label, value_hash) WHERE value_hash IS NOT NULL DO UPDATE SET
                             sensitivity = EXCLUDED.sensitivity,
                             source = EXCLUDED.source,
                             confidence = GREATEST(profile_facts.confidence, EXCLUDED.confidence),
@@ -334,7 +625,10 @@ async def insert_profile_facts(user_id: str, facts: list[ExtractedProfileFact]) 
                         "user_id": _uuid(user_id),
                         "fact_type": fact.fact_type,
                         "label": fact.label,
-                        "value": fact.value,
+                        "value_ciphertext": encrypted.ciphertext,
+                        "value_nonce": encrypted.nonce,
+                        "value_key_id": encrypted.key_id,
+                        "value_hash": encrypted.value_hash,
                         "sensitivity": fact.sensitivity,
                         "source": fact.source,
                         "confidence": fact.confidence,
@@ -350,6 +644,7 @@ async def insert_profile_facts(user_id: str, facts: list[ExtractedProfileFact]) 
 
 async def list_user_profile_facts(user_id: str) -> list[ProfileFact]:
     await purge_expired_profile_facts(user_id)
+    dek = await get_user_dek(user_id)
     sessionmaker = get_sessionmaker()
     async with sessionmaker() as session:
         try:
@@ -357,7 +652,8 @@ async def list_user_profile_facts(user_id: str) -> list[ProfileFact]:
                 await session.execute(
                     text(
                         """
-                        SELECT id, user_id, fact_type, label, value, sensitivity, source, confidence,
+                        SELECT id, user_id, fact_type, label, value, value_ciphertext, value_nonce, value_key_id,
+                               sensitivity, source, confidence,
                                created_at, updated_at, expires_at
                         FROM profile_facts
                         WHERE user_id = :user_id AND expires_at > now()
@@ -372,17 +668,19 @@ async def list_user_profile_facts(user_id: str) -> list[ProfileFact]:
             if _is_missing_profile_facts_table(exc):
                 return []
             raise
-    return [_profile_fact_from_row(row) for row in rows]
+    return [_profile_fact_from_row(row, dek=dek) for row in rows]
 
 
 async def list_user_memories(user_id: str) -> list[MemoryCandidate]:
+    dek = await get_user_dek(user_id)
     sessionmaker = get_sessionmaker()
     async with sessionmaker() as session:
         rows = list((
             await session.execute(
                 text(
                     """
-                    SELECT id, user_id, type, content, status, importance, confidence, unsafe,
+                    SELECT id, user_id, type, content, content_ciphertext, content_nonce, content_key_id,
+                           status, importance, confidence, unsafe,
                            created_at, updated_at, archived_at, expires_at, 0.0 AS similarity
                     FROM memories
                     WHERE user_id = :user_id
@@ -393,7 +691,7 @@ async def list_user_memories(user_id: str) -> list[MemoryCandidate]:
                 {"user_id": _uuid(user_id)},
             )
         ).mappings())
-    return [_memory_from_row(row) for row in rows]
+    return [_memory_from_row(row, dek=dek) for row in rows]
 
 
 async def list_safety_events(limit: int = 50) -> list[SafetyEvent]:
@@ -679,6 +977,7 @@ async def delete_user_data(user_id: str) -> None:
             "safety_events",
             "profile_facts",
             "memories",
+            "user_encryption_keys",
             "chat_messages",
             "chat_sessions",
         ]:
@@ -691,12 +990,17 @@ async def delete_user_data(user_id: str) -> None:
         await session.commit()
 
 
-def _memory_from_row(row) -> MemoryCandidate:
+def _memory_from_row(row, dek: tuple[bytes, str] | None = None) -> MemoryCandidate:
+    content = row["content"]
+    ciphertext = _row_value(row, "content_ciphertext")
+    nonce = _row_value(row, "content_nonce")
+    if ciphertext and nonce and dek:
+        content = decrypt_text_for_user(str(row["user_id"]), "memories", "content", _bytes(ciphertext), _bytes(nonce), dek[0])
     return MemoryCandidate(
         id=str(row["id"]),
         user_id=str(row["user_id"]),
         type=row["type"],
-        content=row["content"],
+        content=content,
         status=MemoryStatus(row["status"]),
         importance=row["importance"],
         confidence=row["confidence"],
@@ -709,13 +1013,18 @@ def _memory_from_row(row) -> MemoryCandidate:
     )
 
 
-def _profile_fact_from_row(row) -> ProfileFact:
+def _profile_fact_from_row(row, dek: tuple[bytes, str] | None = None) -> ProfileFact:
+    value = row["value"]
+    ciphertext = _row_value(row, "value_ciphertext")
+    nonce = _row_value(row, "value_nonce")
+    if ciphertext and nonce and dek:
+        value = decrypt_text_for_user(str(row["user_id"]), "profile_facts", "value", _bytes(ciphertext), _bytes(nonce), dek[0])
     return ProfileFact(
         id=str(row["id"]),
         user_id=str(row["user_id"]),
         fact_type=row["fact_type"],
         label=row["label"],
-        value=row["value"],
+        value=value,
         sensitivity=row["sensitivity"],
         source=row["source"],
         confidence=float(row["confidence"]),

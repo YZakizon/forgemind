@@ -77,6 +77,20 @@ def test_profile_fact_extraction_captures_habits_health_and_timezone():
     assert [fact for fact in facts if fact.fact_type == "health_context"][0].sensitivity == "health"
 
 
+def test_profile_fact_policy_adds_capture_terms_and_blocks_terms():
+    policy = {
+        "capture_terms": {"health_context": ["migraine"]},
+        "blocked_terms": {"all": ["credit card"]},
+        "ttl_days_by_type": {"health_context": 30},
+    }
+
+    facts = extract_profile_facts("I get a migraine most Fridays. My credit card is stressful.", policy=policy)
+
+    assert [(fact.fact_type, fact.label) for fact in facts] == [("health_context", "migraine")]
+    assert facts[0].sensitivity == "health"
+    assert facts[0].expires_at <= datetime.now(UTC) + timedelta(days=31)
+
+
 def test_profile_fact_ai_payload_is_validated():
     facts = profile_facts_from_ai_payload(
         [
@@ -94,6 +108,15 @@ def test_profile_fact_ai_payload_is_validated():
 
     assert len(facts) == 1
     assert facts[0].fact_type == "habit"
+
+
+def test_profile_fact_ai_payload_respects_policy_blacklist():
+    facts = profile_facts_from_ai_payload(
+        [{"fact_type": "name", "label": "name", "value": "my password is secret"}],
+        policy={"blocked_terms": {"all": ["password"]}},
+    )
+
+    assert facts == []
 
 
 def test_profile_fact_prompt_asks_for_timezone_when_missing():
