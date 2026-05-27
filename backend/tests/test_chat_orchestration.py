@@ -1,5 +1,6 @@
 import asyncio
 
+import app.main as main
 from app.main import VoiceTranscriptSegment, chat, merge_transcript_segments, reply_suggestions, split_response_parts, split_tts_chunks
 from app.schemas import ChatRequest, ReplySuggestionsRequest, SafetyLevel
 from app.services.ai import generate_grounded_response
@@ -49,7 +50,13 @@ def test_history_block_formats_recent_conversation_context():
     assert "User: Work pressure and not sleeping." in block
 
 
-def test_reply_suggestions_fallback_answers_latest_forge_question():
+def test_reply_suggestions_fallback_answers_latest_forge_question(monkeypatch):
+    class FakeProvider:
+        def generate_reply_suggestions(self, user_message, forge_message, mode, history):
+            return ["I feel overloaded", "The deadline is urgent", "Help me prioritize"]
+
+    monkeypatch.setattr(main, "OpenAIProvider", FakeProvider)
+
     response = asyncio.run(
         reply_suggestions(
             ReplySuggestionsRequest(
