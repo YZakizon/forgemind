@@ -104,7 +104,7 @@ class OpenAIProvider:
 
         return generate_grounded_response(message, mode, memory_block, guidance_block)
 
-    def extract_profile_facts(self, message: str) -> list[ExtractedProfileFact]:
+    def extract_profile_facts(self, message: str, policy=None) -> list[ExtractedProfileFact]:
         if not self.enabled:
             return []
 
@@ -138,7 +138,7 @@ class OpenAIProvider:
                 )
                 output_text = completion.choices[0].message.content
             payload = json.loads(output_text or "{}")
-            return profile_facts_from_ai_payload(payload.get("facts", []))
+            return profile_facts_from_ai_payload(payload.get("facts", []), policy=policy)
         except Exception:
             return []
 

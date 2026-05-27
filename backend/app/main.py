@@ -26,6 +26,8 @@ from app.schemas import (
     MemoryListResponse,
     MoodCheckin,
     MoodCheckinCreate,
+    ProfileFactPolicy,
+    ProfileFactPolicyUpdate,
     ProgressSummary,
     ResetSession,
     ResetSessionCreate,
@@ -242,6 +244,7 @@ async def _chat_flow(payload: ChatRequest, transcript: str | None = None) -> Cha
         if not db_available:
             raise RuntimeError("database unavailable")
         await store.ensure_demo_user(payload.user_id)
+        profile_fact_policy = await store.get_profile_fact_policy()
         session_id = await store.create_chat_session(payload.user_id, payload.mode)
         user_message_id = await store.save_chat_message(session_id, payload.user_id, "user", payload.message, safety.level)
         await store.save_chat_message(session_id, payload.user_id, "assistant", response, response_safety)
@@ -250,8 +253,8 @@ async def _chat_flow(payload: ChatRequest, transcript: str | None = None) -> Cha
         memory_contents = extract_memory_candidates(payload.message)
         memory_embeddings = {content: provider.embed_text(content) for content in memory_contents}
         await store.insert_memories(payload.user_id, memory_contents, memory_embeddings)
-        profile_facts = extract_profile_facts(payload.message)
-        profile_facts.extend(provider.extract_profile_facts(payload.message))
+        profile_facts = extract_profile_facts(payload.message, policy=profile_fact_policy)
+        profile_facts.extend(provider.extract_profile_facts(payload.message, policy=profile_fact_policy))
         await store.insert_profile_facts(payload.user_id, profile_facts)
         persisted = True
         capture_event(
@@ -708,6 +711,24 @@ async def list_memories(user_id: str) -> MemoryListResponse:
     except Exception:
         logger.exception("list memories failed", extra={"user_id": user_id})
         return MemoryListResponse(items=[])
+
+
+@app.get("/profile-facts/policy", response_model=ProfileFactPolicy)
+async def get_profile_fact_policy() -> ProfileFactPolicy:
+    try:
+        return await store.get_profile_fact_policy()
+    except Exception:
+        logger.exception("get profile fact policy failed")
+        return ProfileFactPolicy()
+
+
+@app.put("/profile-facts/policy", response_model=ProfileFactPolicy)
+async def update_profile_fact_policy(payload: ProfileFactPolicyUpdate) -> ProfileFactPolicy:
+    try:
+        return await store.save_profile_fact_policy(payload)
+    except Exception as exc:
+        logger.exception("update profile fact policy failed")
+        raise HTTPException(status_code=503, detail="Profile fact policy is unavailable") from exc
 
 
 @app.post("/memories/archive", response_model=DataControlResponse)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -12,6 +13,8 @@ from app.schemas import (
     MemoryStatus,
     MoodCheckin,
     ProfileFact,
+    ProfileFactPolicy,
+    ProfileFactPolicyUpdate,
     ProgressSummary,
     ProgressTheme,
     ResetSession,
@@ -20,7 +23,7 @@ from app.schemas import (
     UserDataExport,
 )
 from app.services.crypto import decrypt_text_for_user, encrypt_text_for_user, generate_dek, unwrap_dek, wrap_dek
-from app.services.profile_facts import ExtractedProfileFact
+from app.services.profile_facts import ExtractedProfileFact, normalize_profile_fact_policy
 from app.services.guidance import DEFAULT_GUIDANCE_RULES
 
 
@@ -46,6 +49,13 @@ def _is_missing_encryption_table(exc: Exception) -> bool:
     )
 
 
+def _is_missing_profile_fact_policy_table(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "profile_fact_capture_policy" in message and (
+        "undefinedtable" in message or "does not exist" in message or "no such table" in message
+    )
+
+
 def _row_value(row, key: str):
     try:
         return row[key]
@@ -55,6 +65,10 @@ def _row_value(row, key: str):
 
 def _bytes(value) -> bytes:
     return bytes(value) if isinstance(value, memoryview) else value
+
+
+def _json_value(value):
+    return json.loads(value) if isinstance(value, str) else value
 
 
 async def ensure_demo_user(user_id: str) -> None:
@@ -492,6 +506,88 @@ async def purge_expired_profile_facts(user_id: str | None = None) -> int:
                 return 0
             raise
     return int(result.rowcount or 0)
+
+
+async def get_profile_fact_policy() -> ProfileFactPolicy:
+    sessionmaker = get_sessionmaker()
+    try:
+        async with sessionmaker() as session:
+            row = (
+                await session.execute(
+                    text(
+                        """
+                        SELECT capture_terms, blocked_terms, ttl_days_by_type
+                        FROM profile_fact_capture_policy
+                        WHERE id = 'default'
+                        """
+                    ),
+                    {},
+                )
+            ).mappings().one_or_none()
+    except Exception as exc:
+        if _is_missing_profile_fact_policy_table(exc):
+            return ProfileFactPolicy(**normalize_profile_fact_policy(None))
+        raise
+    if row is None:
+        return ProfileFactPolicy(**normalize_profile_fact_policy(None))
+    return ProfileFactPolicy(
+        **normalize_profile_fact_policy(
+            {
+                "capture_terms": _json_value(row["capture_terms"]),
+                "blocked_terms": _json_value(row["blocked_terms"]),
+                "ttl_days_by_type": _json_value(row["ttl_days_by_type"]),
+            }
+        )
+    )
+
+
+async def save_profile_fact_policy(policy: ProfileFactPolicyUpdate) -> ProfileFactPolicy:
+    normalized = normalize_profile_fact_policy(policy)
+    sessionmaker = get_sessionmaker()
+    async with sessionmaker() as session:
+        try:
+            row = (
+                await session.execute(
+                    text(
+                        """
+                        INSERT INTO profile_fact_capture_policy (
+                            id, capture_terms, blocked_terms, ttl_days_by_type
+                        )
+                        VALUES (
+                            'default',
+                            CAST(:capture_terms AS jsonb),
+                            CAST(:blocked_terms AS jsonb),
+                            CAST(:ttl_days_by_type AS jsonb)
+                        )
+                        ON CONFLICT (id) DO UPDATE SET
+                            capture_terms = EXCLUDED.capture_terms,
+                            blocked_terms = EXCLUDED.blocked_terms,
+                            ttl_days_by_type = EXCLUDED.ttl_days_by_type,
+                            updated_at = now()
+                        RETURNING capture_terms, blocked_terms, ttl_days_by_type
+                        """
+                    ),
+                    {
+                        "capture_terms": json.dumps(normalized["capture_terms"]),
+                        "blocked_terms": json.dumps(normalized["blocked_terms"]),
+                        "ttl_days_by_type": json.dumps(normalized["ttl_days_by_type"]),
+                    },
+                )
+            ).mappings().one()
+            await session.commit()
+        except Exception as exc:
+            if _is_missing_profile_fact_policy_table(exc):
+                return ProfileFactPolicy(**normalized)
+            raise
+    return ProfileFactPolicy(
+        **normalize_profile_fact_policy(
+            {
+                "capture_terms": _json_value(row["capture_terms"]),
+                "blocked_terms": _json_value(row["blocked_terms"]),
+                "ttl_days_by_type": _json_value(row["ttl_days_by_type"]),
+            }
+        )
+    )
 
 
 async def insert_profile_facts(user_id: str, facts: list[ExtractedProfileFact]) -> None:

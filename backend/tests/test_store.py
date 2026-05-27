@@ -1,5 +1,7 @@
 import asyncio
+import json
 
+from app.schemas import ProfileFactPolicyUpdate
 from app.services.crypto import encrypt_text_for_user
 from app.services import store
 
@@ -239,3 +241,39 @@ def test_backfill_encrypts_plaintext_profile_facts(monkeypatch):
     assert "UPDATE profile_facts" in update_session.statements[0]
     assert update_session.params["value_hash"]
     assert update_session.params["ciphertext"] != b"bikes every weekend"
+
+
+def test_save_profile_fact_policy_normalizes_terms_and_ttls(monkeypatch):
+    class PolicySession(FakeSession):
+        async def execute(self, statement, params):
+            self.statements.append(str(statement))
+            self.params = params
+            self.params_history.append(params)
+            return FakeResult(
+                [
+                    {
+                        "capture_terms": json.loads(params["capture_terms"]),
+                        "blocked_terms": json.loads(params["blocked_terms"]),
+                        "ttl_days_by_type": json.loads(params["ttl_days_by_type"]),
+                    }
+                ]
+            )
+
+    session = PolicySession()
+    monkeypatch.setattr(store, "get_sessionmaker", lambda: lambda: session)
+
+    policy = asyncio.run(
+        store.save_profile_fact_policy(
+            ProfileFactPolicyUpdate(
+                capture_terms={"health_context": ["Migraine", "migraine"]},
+                blocked_terms={"all": ["Password"]},
+                ttl_days_by_type={"health_context": 12, "habit": 999},
+            )
+        )
+    )
+
+    assert policy.capture_terms["health_context"] == ["migraine"]
+    assert policy.blocked_terms["all"] == ["password"]
+    assert policy.ttl_days_by_type["health_context"] == 30
+    assert policy.ttl_days_by_type["habit"] == 365
+    assert "profile_fact_capture_policy" in session.statements[0]
