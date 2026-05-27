@@ -682,7 +682,12 @@ async def delete_user_data(user_id: str) -> None:
             "chat_messages",
             "chat_sessions",
         ]:
-            await session.execute(text(f"DELETE FROM {table} WHERE user_id = :user_id"), {"user_id": parsed_user_id})
+            try:
+                await session.execute(text(f"DELETE FROM {table} WHERE user_id = :user_id"), {"user_id": parsed_user_id})
+            except Exception as exc:
+                if table == "profile_facts" and _is_missing_profile_facts_table(exc):
+                    continue
+                raise
         await session.commit()
 
 
