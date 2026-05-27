@@ -1,5 +1,6 @@
 import asyncio
 
+from app.services.crypto import encrypt_text_for_user
 from app.services import store
 
 
@@ -52,6 +53,9 @@ class MissingProfileFactsSession(FakeSession):
     async def execute(self, statement, params):
         self.statements.append(str(statement))
         self.params = params
+        statement_text = str(statement)
+        if "user_encryption_keys" in statement_text:
+            return FakeResult()
         raise RuntimeError('UndefinedTableError: relation "profile_facts" does not exist')
 
 
@@ -113,6 +117,7 @@ def test_delete_user_data_clears_user_owned_tables(monkeypatch):
         "safety_events",
         "profile_facts",
         "memories",
+        "user_encryption_keys",
         "chat_messages",
         "chat_sessions",
     ]:
@@ -155,7 +160,11 @@ def test_insert_profile_facts_skips_when_table_is_missing(monkeypatch):
     async def noop_ensure_demo_user(user_id: str) -> None:
         return None
 
+    async def fake_dek(user_id: str):
+        return b"0" * 32, "test-v1"
+
     monkeypatch.setattr(store, "ensure_demo_user", noop_ensure_demo_user)
+    monkeypatch.setattr(store, "get_or_create_user_dek", fake_dek)
     monkeypatch.setattr(store, "get_sessionmaker", lambda: lambda: session)
 
     asyncio.run(
@@ -176,3 +185,32 @@ def test_insert_profile_facts_skips_when_table_is_missing(monkeypatch):
     )
 
     assert not session.committed
+
+
+def test_profile_fact_row_decrypts_encrypted_value():
+    user_id = "00000000-0000-4000-8000-000000000001"
+    dek = b"1" * 32
+    encrypted = encrypt_text_for_user(user_id, "profile_facts", "value", "bikes every weekend", dek, "test-v1")
+    now = store.datetime.now(store.UTC)
+
+    fact = store._profile_fact_from_row(
+        {
+            "id": "fact-1",
+            "user_id": user_id,
+            "fact_type": "habit",
+            "label": "exercise",
+            "value": "",
+            "value_ciphertext": encrypted.ciphertext,
+            "value_nonce": encrypted.nonce,
+            "value_key_id": encrypted.key_id,
+            "sensitivity": "normal",
+            "source": "chat",
+            "confidence": 0.8,
+            "created_at": now,
+            "updated_at": now,
+            "expires_at": now,
+        },
+        dek=(dek, "test-v1"),
+    )
+
+    assert fact.value == "bikes every weekend"

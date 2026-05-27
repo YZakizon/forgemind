@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://forgemind:forgemind@localhost:5435/forgemind"
     jwt_secret: str = "dev-change-me"
     jwt_algorithm: str = "HS256"
+    encryption_provider: str = "local"
+    encryption_master_key: str | None = None
+    encryption_key_id: str = "local-v1"
     ai_provider: str = "openai"
     stt_provider: str = "openai"
     tts_provider: str = "openai"
@@ -56,6 +59,7 @@ class Settings(BaseSettings):
 
     @field_validator(
         "openai_stt_language",
+        "encryption_master_key",
         "deepgram_api_key",
         "deepgram_tts_container",
         "sentry_dsn",
